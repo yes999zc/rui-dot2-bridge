@@ -1,0 +1,101 @@
+# dev/rui/env — rui runtime environment for this sandbox.
+#
+# SOURCE it, do not execute it (exports would die with the child shell):
+#     set -a; . dev/rui/env; set +a
+# scripts/dev_rui.sh sources this file for you.
+#
+# Secret handling (AGENTS.md §5): no secret value is ever written into this
+# workspace file. Every value is read at source time from ~/.hermes/.env (0600),
+# which stays the single owner of the credentials. Only the *names* are mapped:
+#
+#   HOUSE_EAR_LLM_KEY   <- DEEPSEEK_API_KEY   providers.catalog.deepseek_llm
+#   DEEPSEEK_API_KEY    <- DEEPSEEK_API_KEY   tools.search.api_key_env
+#   XFYUN_APPID         <- XFYUN_APPID        providers.catalog.xfyun_tts
+#   XFYUN_API_KEY       <- XFYUN_API_KEY      providers.catalog.xfyun_tts
+#   XFYUN_API_SECRET    <- XFYUN_API_SECRET   providers.catalog.xfyun_tts
+#   HOUSE_EAR_ASR_KEY   optional; NOT needed by the local-sherpa-only asr chain.
+#                       Only set it if you put the cloud ASR back in asr.chain.
+#
+# Anything already in the caller's environment wins: the lookup only fills empty
+# slots, so `HOUSE_EAR_LLM_KEY=... ./scripts/dev_rui.sh` still works.
+#
+# Exit status: sets RUI_ENV_MISSING (space-separated variable *names*) instead of
+# returning non-zero — a sourced file must never kill the caller's shell.
+
+HERMES_ENV="${HERMES_ENV:-$HOME/.hermes/.env}"
+
+# Read one variable out of $HERMES_ENV. Last definition wins (later lines override
+# earlier ones, as a normal dotenv loader would). Only the name is a parameter, so
+# no value can leak into the sed program or an error message.
+_rui_env_lookup() {
+    [ -f "$HERMES_ENV" ] || return 1
+    _rui_line=$(sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$1[[:space:]]*=//p" \
+        "$HERMES_ENV" | tail -n 1)
+    [ -n "$_rui_line" ] || return 1
+    # Trim a trailing CR (a .env edited on another OS) and one layer of quotes.
+    printf '%s' "$_rui_line" | sed -e 's/\r$//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+# fill VAR: keep the caller's value when non-empty, otherwise look it up by the
+# same name in ~/.hermes/.env. Never echoes the value.
+_rui_fill() {
+    eval "_rui_current=\${$1:-}"
+    if [ -z "$_rui_current" ]; then
+        _rui_value=$(_rui_env_lookup "$1") || _rui_value=""
+        if [ -n "$_rui_value" ]; then
+            eval "export $1=\"\$_rui_value\""
+        fi
+        unset _rui_value
+    else
+        eval "export $1"
+    fi
+    unset _rui_current
+}
+
+# --- the mapping rui's config actually names -------------------------------
+_rui_fill XFYUN_APPID
+_rui_fill XFYUN_API_KEY
+_rui_fill XFYUN_API_SECRET
+
+# DeepSeek: one key, two names. HOUSE_EAR_LLM_KEY is what providers.*.api_key_env
+# asks for; DEEPSEEK_API_KEY is what tools.search.api_key_env asks for.
+eval "_rui_llm=\${HOUSE_EAR_LLM_KEY:-\${DEEPSEEK_API_KEY:-}}"
+if [ -z "$_rui_llm" ]; then
+    _rui_llm=$(_rui_env_lookup DEEPSEEK_API_KEY) || _rui_llm=""
+fi
+if [ -n "$_rui_llm" ]; then
+    export HOUSE_EAR_LLM_KEY="$_rui_llm"
+    export DEEPSEEK_API_KEY="$_rui_llm"
+fi
+unset _rui_llm
+
+# Optional cloud-ASR key: only pass through what is already exported. The local
+# sherpa chain in dev/rui/config.yaml does not read it.
+if [ -n "${HOUSE_EAR_ASR_KEY:-}" ]; then
+    export HOUSE_EAR_ASR_KEY
+fi
+
+# --- report missing names (names only, never values) -----------------------
+RUI_ENV_MISSING=""
+for _rui_name in HOUSE_EAR_LLM_KEY DEEPSEEK_API_KEY \
+                 XFYUN_APPID XFYUN_API_KEY XFYUN_API_SECRET; do
+    eval "_rui_seen=\${${_rui_name}:-}"
+    [ -n "$_rui_seen" ] || RUI_ENV_MISSING="$RUI_ENV_MISSING $_rui_name"
+done
+unset _rui_seen _rui_name
+
+if [ -n "$RUI_ENV_MISSING" ]; then
+    echo "dev/rui/env: missing values for:$RUI_ENV_MISSING" >&2
+    echo "  source file: $HERMES_ENV (expected DEEPSEEK_API_KEY / XFYUN_*)" >&2
+fi
+
+# Keep secrets out of child command lines and out of `set -x` traces.
+set +x 2>/dev/null || true
+
+# --- dot2 device link token (EchoMuse X-EM-Token) ---------------------------
+# Read from the project's 0600 secrets dir at source time; never written into
+# this file, the config, or the logs.
+if [ -z "${DOT2_TOKEN:-}" ] && [ -r "$ROOT/secrets/device_token" ]; then
+  DOT2_TOKEN="$(cat "$ROOT/secrets/device_token")"
+  export DOT2_TOKEN
+fi

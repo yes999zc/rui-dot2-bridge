@@ -1,0 +1,178 @@
+# rui (house-ear v1, frozen) — local dev sandbox config.
+#
+# Origin: hand-written from 01_Code/projects/house-ear/config.example.yaml +
+# src/house_ear/config/schema.py (pydantic = field truth, CONFIG_VERSION 2).
+# The house-ear checkout is READ-ONLY: this file is the only place dev paths live,
+# and it is selected at runtime with HOUSE_EAR_CONFIG (see scripts/dev_rui.sh).
+#
+# Differences from the production template, all on purpose:
+#   - system.data_dir / model paths point at this Mac, not /var/lib + /data.
+#   - web binds 127.0.0.1:8091 (dev port) and allows anonymous access: it is loopback
+#     only, and the frozen build lets an empty token through on loopback anyway.
+#   - providers keep only the local sherpa ASR + 讯飞 TTS + DeepSeek LLM chain.
+#     No cloud ASR fallback (siliconflow/volc) so a dead network cannot mask a bad
+#     local model; flip asr.chain when you need it.
+#   - devices: [] — intentionally empty. The dot2 device entry is added by the Lead
+#     during adapter integration (an adapter name this build does not know is a
+#     readable per-device error, not a startup failure).
+version: 2
+
+system:
+  data_dir: /workspace/01_Code/projects/rui-dot2-bridge/dev/rui/data
+  log_level: info
+  timezone: Asia/Shanghai
+
+web:
+  host: 127.0.0.1
+  port: 8091
+  auth_token: ""          # loopback-only dev box: no console token
+  allow_anonymous: true   # required for a non-loopback bind with an empty token; harmless here
+
+devices:
+  # Echo Dot 2 running EchoMuse v2.18.1; it dials THIS process on 8870 (TLS).
+  - id: dot2
+    adapter: dot2
+    host: <lan-ip>
+    room: 客厅
+    wake_words: ["你好小瑞"]
+    volume: 30
+    listen_port: 8870
+    token_env: DOT2_TOKEN
+    led:
+      enabled: false
+
+audio:
+  # The LX06 capture layout the old deployment measured. Not used until a device is
+  # added, but a device adapter will read these, so keep the production values.
+  capture:
+    # Dot 2 / EchoMuse: ONE mono 16 kHz channel, already AEC'd on the device,
+    # and no playback reference on the wire (rui turns its own AEC + barge-in off).
+    rate: 16000
+    channels: 1
+    mic_channels: 1
+    ref_channels: 0
+    bits: 16
+  voice:
+    rate: 16000
+    frame_ms: 20
+    vad_min_speech_ms: 200
+    vad_end_silence_ms: 600
+    vad_preroll_ms: 350
+    wake_skip_ms: 300
+    barge_in: true
+    kws_enabled: true
+    # Local models are referenced by absolute path; nothing under house-ear is touched.
+    kws_model_dir: /workspace/03_Data/Models/sherpa-onnx/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20
+    # Generated from devices[].wake_words by `python -m house_ear keywords`;
+    # the real gate (boost/threshold) lives inside this file, not in the config.
+    kws_keywords_file: /workspace/01_Code/projects/rui-dot2-bridge/dev/rui/keywords.txt
+    kws_probe_file: ""
+    kws_chunk: 8
+    kws_num_threads: 1
+    vad_model_path: /workspace/03_Data/Models/sherpa-onnx/silero_vad.onnx
+    wake_preroll_ms: 500
+  playback:
+    # The device's wire format for 0x02 speaker frames: 48 kHz mono S16.
+    rate: 48000
+    channels: 1
+  aec:
+    enabled: true
+    filter_len: 4096
+    cancel: mix
+
+ack:
+  # Spoken cue: xfyun TTS is reachable from this Mac and 9哥 picked `tts` in production.
+  # It is rendered once at startup (dev/rui/data/ack.wav); a TTS failure logs and
+  # falls back to the tone, so it can never block startup. Use `earcon` to make the
+  # sandbox fully offline-hermetic.
+  mode: tts
+  text: 在呢。
+  chime: soft2
+  chime_ms: 320
+  chime_trim: 1.0
+  max_ms: 600
+  echo_ignore_ms: 1200
+
+assistant:
+  name: 小瑞
+  persona: "你是家里的小助理，叫{name}。不知道就说不知道，别装懂。"
+  system_prompt: ""
+  filler_after_s: 1.8
+  filler_after_tool_s: 0.6
+  filler_text: 我查一下。
+  reply_max_chars: 120
+  reply_max_chars_search: 300
+  reply_max_chars_long: 900
+
+session:
+  vendor_quiet_s: 12
+  timeout_s: 15
+  farewell: short
+  farewell_text: 没事的话，我先下啦。
+  farewell_text_full: 我先下啦，有事喊我。
+  keep_context: true
+  history_rounds: 6
+
+providers:
+  catalog:
+    # Local ASR only. SenseVoice int8 + tokens.txt sit in the model dir; the provider
+    # resolves model.int8.onnx first and loads it at startup (warm()).
+    local_asr:
+      kind: sherpa
+      model: /workspace/03_Data/Models/sherpa-onnx/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17
+      threads: 2
+    # 讯飞 online TTS: keys come from the environment (dev/rui/env maps the XFYUN_*
+    # names straight from ~/.hermes/.env); the config only names the variables.
+    xfyun_tts:
+      kind: xfyun
+      voice: x4_lingxiaowan_boy
+      app_id_env: XFYUN_APPID
+      api_key_env: XFYUN_API_KEY
+      api_secret_env: XFYUN_API_SECRET
+    # DeepSeek via the OpenAI-compatible chat endpoint. `deepseek-flash` is confirmed
+    # from GET https://api.deepseek.com/models on this key (also listed: deepseek-v4-pro).
+    deepseek_llm:
+      kind: openai_compat
+      base_url: https://api.deepseek.com
+      model: deepseek-flash
+      api_key_env: HOUSE_EAR_LLM_KEY
+      timeout_s: 30.0
+      max_tokens: 3000
+      temperature: 0.4
+      thinking: disabled
+  asr:
+    chain: [local_asr]
+  tts:
+    chain: [xfyun_tts]
+  llm:
+    chain: [deepseek_llm]
+
+tools:
+  expose: domain
+  whitelist: []
+  mcp_servers: []
+  weather:
+    city: ""               # empty = the assistant asks instead of guessing
+    days_max: 3
+  news:
+    enabled: true
+  search:
+    enabled: true
+    kind: deepseek
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    count: 6
+  ha:
+    base_url: ""
+    token_env: HOUSE_EAR_HA_TOKEN
+
+music:
+  enabled: false           # no Navidrome on this box; enabling it needs a credentials json
+  source: navidrome
+  secrets_path: ""
+  cache_dir: /workspace/dev/rui/data/music_cache
+  cache_tracks: 8
+  queue_min_tracks: 2
+  queue_batch: 20
+  history_max: 60
+  resume_hold_ms: 2500
