@@ -146,6 +146,21 @@ shasum -a 256 build/server
 2. Docker buildx 会写 `~/.docker/buildx`（本机沙箱外，EPERM）→ 用工作区内的
    `DOCKER_CONFIG`，脚本里已处理。
 
+### 适配器/rui 侧已用假设备验证（2026-10-24 02:53，不需要固件）
+
+`tools/fake_device.py`（wss + register/ack + 2ch `0x01` 帧）连第二个 rui 实例
+（`:8092`，`config-2ch.yaml`，`capture 2ch/1mic/1ref`，`DOT2_REF_CHANNELS=1`）：
+
+| 检查项 | 结果 |
+|---|---|
+| 握手 | `ack`（features 空 → 适配器由 env 切 2ch，固件由 ack 里的 `dot2_hw_ref` 切） |
+| rui 平面 | `capture: 16 kHz / 2 ch / 1 ref`，`aec_enabled=true`，`ref_active=true` |
+| 数据 | 167 帧 2ch / 13.4 s，`frames_in=668`、`audio_s=13.36` |
+| ERLE | 0.1 dB — **预期**：假设备的 mic 与 ref 不相关，没有回声可消；这里验证的是链路不是效果 |
+
+结论：能力协商、`AudioFrame(channels=2, reference_channels=1)` 布局、rui 的 AEC 链路全部成立；
+剩下唯一未验证项就是"固件真的把参考送上来"，而它已有可复现的交叉编译产物。
+
 ## 安装 / 验证 / 回滚（用设备已有的 A/B 槽）
 
 ```bash

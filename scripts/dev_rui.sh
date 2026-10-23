@@ -27,11 +27,12 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 HOUSE_EAR="${HOUSE_EAR:-$(cd -- "$ROOT/../house-ear" && pwd)}"
 PY="${RUI_PY:-$HOUSE_EAR/.venv/bin/python}"
-CONFIG="${RUI_CONFIG:-$ROOT/dev/rui/config.yaml}"
-LOG_DIR="$ROOT/dev/rui/logs"
+DEV="${RUI_DEV_DIR:-$ROOT/dev/rui}"
+CONFIG="${RUI_CONFIG:-$DEV/config.yaml}"
+LOG_DIR="$DEV/logs"
 LOG="$LOG_DIR/rui.log"
-DATA_DIR="$ROOT/dev/rui/data"
-export RUI_ADAPTER_DIR="${RUI_ADAPTER_DIR:-$ROOT/dev/rui/adapters}"
+DATA_DIR="$DEV/data"
+export RUI_ADAPTER_DIR="${RUI_ADAPTER_DIR:-$DEV/adapters}"
 # The rui audio plane is a CHILD process (`python -m house_ear.audio.process`):
 # an in-memory registry.register() in this process never reaches it. src/sitecustomize.py
 # is imported by both interpreters, so that is what actually registers dot2.
@@ -56,7 +57,7 @@ export HOUSE_EAR_CONFIG="$CONFIG"
 # AF_UNIX socket for the plane <-> control IPC. The default under ~/.local is
 # outside the workspace sandbox here (EPERM at bind), so keep it in dev/.
 # resolve_socket_path() hashes anything over 96 bytes, so this stays short.
-export HOUSE_EAR_AUDIO_SOCK="$ROOT/dev/rui/audio.sock"
+export HOUSE_EAR_AUDIO_SOCK="${HOUSE_EAR_AUDIO_SOCK:-$DEV/audio.sock}"
 export PYTHONUNBUFFERED=1
 
 # --- out-of-tree adapters (dot2), before house_ear imports anything --------

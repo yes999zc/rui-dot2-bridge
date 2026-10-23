@@ -28,3 +28,8 @@ dev/rui/config.last-good.yaml
 dev/rui/p2-trials.jsonl
 dev/rui/soak*
 .docker/
+dev/rui2/
+dev/rui/data-2ch/
+dev/rui*/config.last-good.yaml
+dev/rui*/audio*.sock
+dev/rui*/logs/
