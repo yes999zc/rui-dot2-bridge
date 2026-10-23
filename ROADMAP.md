@@ -106,7 +106,9 @@
 
 ### P3 — rui 接管 AEC（条件项，6–8 天｜目标 11-03 → 11-14）
 
-> 完整分析：[docs/aec-takeover.md](docs/aec-takeover.md)。**这是唯一会碰设备的阶段。**
+> 完整分析：[docs/aec-takeover.md](docs/aec-takeover.md)；
+> 补丁级实施计划（已核实上游代码路径、A/B 槽回滚）：[docs/p3-firmware-patch.md](docs/p3-firmware-patch.md)。
+> **这是唯一会碰设备的阶段。** adapter 侧已就绪：`DOT2_REF_CHANNELS=1` 即切 2ch + `REFERENCE` 能力。
 
 **P3.1 离线验证（2 天，可与 P2 并行）**
 - 用 P0 的抓包 + 设备 raw 9ch 抓取，离线跑 `dealias`（283 行）+ 一条 speex；

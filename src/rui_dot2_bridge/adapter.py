@@ -29,10 +29,18 @@ from house_ear.device.contract import (
 )
 
 from .device_link import DeviceLink
-from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE, rechunk_voice
+from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE
 from .volume import VOLUME_CAP_PERCENT, clamp_percent
 
 log = logging.getLogger(__name__)
+
+def _rechunk(pcm: bytes, channels: int, frame_ms: int) -> list[bytes]:
+    """Cut an interleaved block into ``frame_ms`` pieces, never mid-sample-frame."""
+    step = MIC_RATE * 2 * frame_ms // 1000 * channels
+    if step <= 0:
+        raise ValueError("frame_ms too small")
+    return [pcm[i : i + step] for i in range(0, len(pcm), step)]
+
 
 DEFAULT_TLS_PORT = 8870
 DEFAULT_INJECT_PORT = 8871   # loopback-only test hook, off unless DOT2_INJECT_PORT is set
@@ -57,11 +65,19 @@ class Dot2Adapter(DeviceAdapter):
         aec_enabled: bool = True,
         oww_on_device: str = "off",
         inject_port: int | None = None,
+        mic_channels: int = 1,
+        ref_channels: int = 0,
     ) -> None:
         self.device_id = device_id
         self.host = host
         self.room = room
         self.volume_cap_percent = clamp_percent(volume_cap_percent)
+        # Capture layout. Stock firmware: one mono channel, no reference.
+        # P3 (firmware fork) will add a trailing playback reference; the adapter
+        # is already able to expose it, so the switch is config, not code.
+        self.mic_channels = max(1, int(mic_channels))
+        self.ref_channels = max(0, int(ref_channels))
+        self.channels = self.mic_channels + self.ref_channels
         self._seq = 0
         self._frame_buffer = bytearray()
         self._eos_task: asyncio.Task[None] | None = None
@@ -84,19 +100,24 @@ class Dot2Adapter(DeviceAdapter):
         # person in the room (e.g. feed it to /api/v1/asr). Off unless asked for.
         self._record_path = os.environ.get("DOT2_RECORD") or ""
         self._record_wav: wave.Wave_write | None = None
+        capabilities: set[Capability] = {Capability.PLAYBACK, Capability.VOLUME}
+        if self.ref_channels > 0:
+            capabilities.add(Capability.REFERENCE)
+        if self.mic_channels > 1:
+            capabilities.add(Capability.MIC_ARRAY)
         self.info = DeviceInfo(
             id=device_id,
             adapter="dot2",
             model="Echo Dot 2 (RS03QR / biscuit)",
             host=host,
             room=room,
-            capabilities=frozenset({Capability.PLAYBACK, Capability.VOLUME}),
+            capabilities=frozenset(capabilities),
             transport=Transport.INBOUND,
-            channels=1,
+            channels=self.channels,
             sample_rate=MIC_RATE,
             bit_depth=16,
-            mic_channels=1,
-            ref_channels=0,
+            mic_channels=self.mic_channels,
+            ref_channels=self.ref_channels,
         )
 
     # ---------------------------------------------------------------- health
@@ -111,9 +132,10 @@ class Dot2Adapter(DeviceAdapter):
             "firmware": link.info.version,
             "ip": link.info.ip,
             "transport": "wss",
-            "profile": "mono 16 kHz, no reference (device AEC on)"
-            if link.aec_enabled
-            else "mono 16 kHz, no reference (device AEC OFF - test mode)",
+            "profile": (
+                f"{self.mic_channels} mic + {self.ref_channels} ref @16 kHz "
+                f"({'device AEC on' if link.aec_enabled else 'device AEC OFF - test mode'})"
+            ),
             "rtt_ms": link.stats.rtt_ms,
             "mic_frames": link.stats.mic_frames,
             "dropped_audio": link.stats.dropped_audio,
@@ -172,7 +194,7 @@ class Dot2Adapter(DeviceAdapter):
         try:
             async for block in self._link.frames():
                 self._record(block)
-                for piece in rechunk_voice(block, frame_ms=PLAY_CHUNK_MS):
+                for piece in _rechunk(block, self.channels, PLAY_CHUNK_MS):
                     if not piece:
                         continue
                     self._seq += 1
@@ -181,9 +203,9 @@ class Dot2Adapter(DeviceAdapter):
                         seq=self._seq,
                         ts_ms=time.monotonic() * 1000.0,
                         pcm=piece,
-                        channels=1,
+                        channels=self.channels,
                         sample_rate=MIC_RATE,
-                        reference_channels=0,
+                        reference_channels=self.ref_channels,
                     )
         except asyncio.CancelledError:
             raise
@@ -264,6 +286,8 @@ def build(dev, cfg) -> Dot2Adapter:  # noqa: ANN001 - rui's DeviceConfig/Config
         token = os.environ.get(token_env) or None
     aec_env = os.environ.get("DOT2_AEC_ENABLED", "1").strip().lower()
     inject = os.environ.get("DOT2_INJECT_PORT", "").strip()
+    mic_channels = int(os.environ.get("DOT2_MIC_CHANNELS", "1") or 1)
+    ref_channels = int(os.environ.get("DOT2_REF_CHANNELS", "0") or 0)
     return Dot2Adapter(
         dev.id,
         host=dev.host,
@@ -278,4 +302,6 @@ def build(dev, cfg) -> Dot2Adapter:  # noqa: ANN001 - rui's DeviceConfig/Config
         volume_cap_percent=float(os.environ.get("DOT2_VOLUME_CAP", VOLUME_CAP_PERCENT)),
         aec_enabled=aec_env not in ("0", "false", "no", "off"),
         inject_port=int(inject) if inject else None,
+        mic_channels=mic_channels,
+        ref_channels=ref_channels,
     )
