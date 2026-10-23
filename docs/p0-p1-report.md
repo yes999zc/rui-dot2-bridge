@@ -1,0 +1,96 @@
+# P0 / P1 实测报告（2026-10-24 凌晨）
+
+不依赖人配合的部分已经跑通。所有数字来自真机 + 本机 rui，不是纸面推演。
+
+## P0 — 设备协议探针
+
+| 检查项 | 实测 |
+|---|---|
+| 设备发现 | 静态 `controller.json` 生效：`Static endpoint 1/2 → wss://192.168.5.18:8870`（旧 controller 仍在 endpoints[1] 作为回滚） |
+| TLS | 用旧 controller 的 `server.pem/server.key`，设备以固定 ServerName `echomuse-controller` 校验通过 |
+| 握手 | `register` → `ack` 一次通过；设备上报 **v2.18.1 / fireos / ip 192.168.5.69**，27 项能力（`mic,speaker,leds,led_anim,buttons,...,aec_hw_ref,...,ble_connect`） |
+| 监听状态 | 握手后 `listen_state=stream`；`mic_start(lock_mic=false)` 后**连续流**，无需设备侧唤醒 |
+| 上行 | `0x01` 帧，**12.5 帧/s、80 ms/块、≈31 KB/s**，RTT 5.4–7.8 ms |
+| 音量 | 设备原音量 85/127 → 被 adapter 压到 **38/127（30%）**；设备日志 `Volume set to 38/127`；物理按键超限会被拉回 |
+| 回滚 | 停掉 adapter 后设备依次尝试 endpoints[1] 旧 controller；恢复旧 controller 容器即回退 |
+
+## P1 — rui 端到端
+
+### 配置形态（零改 rui）
+
+- 本机 checkout `01_Code/projects/house-ear` 只读；adapter 通过 `PYTHONPATH=…/rui-dot2-bridge/src` 注入，
+  `src/sitecustomize.py` 在**父进程和音频面子进程**里都执行 `registry.register("dot2", ...)`；
+- rui 配置只改 `dev/rui/config.yaml`：设备 1 台（`adapter: dot2`，TLS 8870）、`capture 16k/1ch/0ref`、
+  `playback 48k/1ch`；
+- 音频面子进程仍受 rui 自己的 watchdog 管理；`/health` → `audio_plane=true`、`speaker_connected=true`。
+
+### 文本回合（rui 自带"试一试" = 完整回合 + TTS + 播放）
+
+请求：`POST /api/v1/debug/say {"text":"现在几点？"}`
+
+| 指标 | 实测 |
+|---|---|
+| 回复 | 「现在是凌晨2点38分，周六。」（DeepSeek） |
+| 回复音频 | 111,358 B @16 kHz = 3.48 s |
+| rui 阶段耗时 | `llm_first=437 ms`、`llm_done=2094 ms`、`tts_first=940 ms`、`play_start=940 ms` |
+| 设备播放 | `periods=85 underruns=0 primeWait=13ms recvSpan=3341ms maxGap=123ms` |
+| 结论 | **TTS→adapter→设备出声全链路通**，无欠载；`primeWait` 仅 13 ms（rui 的 lead 已把设备的 1 s prime 门槛填满） |
+
+### 语音回合（声学回路自测）
+
+因为没有人在房间，用注入钩子把「你好小瑞 + 现在几点」以 48 kHz 送进设备扬声器（音量仍 30%），
+设备麦克风听到后由 adapter 录成 WAV：
+
+- 录音 39.6 s，注入段 RMS ≈ -45 dBFS；
+- 把录音喂给 rui 的 `/api/v1/asr`：
+  - 16–19 s → **「你好，小瑞。」**
+  - 18–21 s → **「小瑞，现在几点？」**
+- 结论：**扬声器 → 空气 → 7 麦 → 设备 AEC/波束 → S16 mono → adapter → rui ASR** 这条声学路径成立。
+
+### 唤醒（KWS）—— 需要人，已量化差距
+
+同一段录音离线喂 rui 的 KWS 模型（`tools/score_wake.py`，与线上同一模型/keywords）：
+
+| 输入 | 阈值 0.15（线上） | 0.25 | 0.40 |
+|---|---|---|---|
+| 合成唤醒词（TTS，满幅） | 0 命中 | 0 | 0 |
+| 30% 音量回采录音 | 0 命中 | 0 | 0 |
+| 同录音 +10 dB | 0 命中 | 0 | 0 |
+| 同录音 +20 dB | — | **1 命中（2.7 s）** | 0 |
+
+**解读**：30% 音量下到达麦克风的唤醒词比模型需要低了约 20 dB；真人对着音箱说话会高得多，
+所以这不是链路故障，而是"用音箱自己的小声回放去唤醒自己"这种自测方式的物理上限。
+结论只能是：**P2 的唤醒率必须由真人明天实测**，脚本侧已把工具备好。
+
+## 另外两个发现（都写进 ROADMAP）
+
+1. **低频漂移**：设备采集存在 ~0.05 Hz、峰值可达满幅的缓慢摆动（AEC 开/关都有）。
+   ASR 不受影响（已实测转写正确），但会污染 `voice_rms_db/peak` 指标；
+   rui 的高通只存在于 AecChain 里，单声道无参考时整条链被跳过。
+   候选修法：adapter 侧加 90 Hz 二阶高通（与 rui AecChain 的 `HighPass` 一致），加之前先量前后 KWS/ASR。
+2. **设备 AEC 测试模式**：本轮为验证声学回路，通过 config push 把设备 AEC 关掉（设备日志 `[aec] disabled`）；
+   生产默认仍是 AEC 开（`DOT2_AEC_ENABLED` 不设即为开）。
+
+## 复现命令
+
+```bash
+# 1) 证书与 token（0600，gitignore）
+cp ~/AI_Workspace/01_Code/services/echomuse-controller/data/tls/{ca.pem,server.pem,server.key} secrets/
+
+# 2) 设备指向本项目（endpoints[1] 是旧 controller 回滚位）
+adb shell "su -c 'cat > /data/local/etc/echomuse/controller.json'" < controller.json
+
+# 3) 本机 rui（只读 checkout）+ adapter
+./scripts/dev_rui.sh
+curl -s http://127.0.0.1:8091/health
+
+# 4) 单独探针（不经过 rui，用于排查设备侧）
+PYTHONPATH=src .venv/bin/python -m rui_dot2_bridge.standalone \
+  --certs-dir secrets --tone --record /tmp/dot2-mic.wav --duration 30
+```
+
+## 未完成 / 需要人
+
+- [ ] P2 真人唤醒率、误唤醒、打断延迟（工具与配置已就绪）
+- [ ] NAS 部署（需要 NAS 上 rui 容器的卷路径，且等验收日镜像更新）
+- [ ] P3 固件 fork：本机没有 Go 工具链（EchoMuse 需要 Go 1.24 + Android/arm 交叉编译）

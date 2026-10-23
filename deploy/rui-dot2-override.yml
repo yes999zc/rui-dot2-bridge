@@ -1,0 +1,26 @@
+# rui + dot2 adapter on the NAS — compose override
+
+Run this **next to** rui's own `docker-compose.yml` (same directory), never editing
+the rui checkout or its image:
+
+    cd <rui-deploy-dir>            # the dir with docker-compose.yml + config/ + data/
+    docker compose -f docker-compose.yml -f rui-dot2-override.yml up -d
+
+Replace the two host paths with wherever this project lives on the NAS. Everything
+else comes from rui's own compose file (host network, restart policy, healthcheck).
+
+services:
+  house-ear:
+    volumes:
+      # src/ goes in as a PYTHONPATH root: it contains both rui_dot2_bridge/ and
+      # sitecustomize.py, so the adapter registers itself in the parent process
+      # AND in the audio-plane child (which is `python -m house_ear.audio.process`).
+      - /volume1/docker/rui-dot2-bridge/src:/opt/rui-py:ro
+      # ca.pem / server.pem / server.key / device_token, mode 0600, never in git.
+      - /volume1/docker/rui-dot2-bridge/secrets:/opt/rui-secrets:ro
+    environment:
+      PYTHONPATH: /opt/rui-py
+      DOT2_SECRETS_DIR: /opt/rui-secrets
+      DOT2_VOLUME_CAP: "30"        # hard ceiling, percent of the device's own scale
+      DOT2_AEC_ENABLED: "1"        # stock device AEC on; 0 only for acoustic-loop tests
+      # No DOT2_INJECT_PORT / DOT2_RECORD: those are dev-only hooks.

@@ -19,3 +19,9 @@ docs/trace/*.jsonl
 
 # macOS
 .DS_Store
+
+# Dev sandbox runtime (config/env/keywords stay tracked; data and logs do not)
+dev/rui/data/
+dev/rui/logs/
+dev/rui/audio.sock
+dev/rui/config.last-good.yaml
