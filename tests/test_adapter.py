@@ -35,6 +35,7 @@ class FakeLink:
         self.eos = 0
         self.flushed = 0
         self.volumes: list[float] = []
+        self.leds: list[tuple[list[dict], bool]] = []
         self.stopped = 0
         self.connected = asyncio.Event()
         self.connected.set()
@@ -60,6 +61,9 @@ class FakeLink:
 
     async def set_volume_percent(self, percent: float) -> None:
         self.volumes.append(percent)
+
+    async def set_leds(self, leds: list[dict], listening: bool = False) -> None:
+        self.leds.append((leds, listening))
 
     async def stop(self) -> None:
         self.stopped += 1
@@ -160,6 +164,53 @@ class VolumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(health["connected"])
         self.assertEqual(health["device_id"], "dot2")
         self.assertIn("1 mic + 0 ref", health["profile"])
+
+
+class LedTest(unittest.IsolatedAsyncioTestCase):
+    async def test_thinking_paints_all_leds(self) -> None:
+        adapter = make_adapter()
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        await adapter.set_led("thinking")
+        leds, listening = link.leds[-1]
+        self.assertEqual(len(leds), 12)
+        self.assertEqual([led["id"] for led in leds], list(range(12)))
+        self.assertEqual((leds[0]["r"], leds[0]["g"], leds[0]["b"]), (0, 40, 160))
+        self.assertFalse(listening)
+
+    async def test_wake_marks_the_ring_listening(self) -> None:
+        adapter = make_adapter()
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        await adapter.set_led("wake")
+        leds, listening = link.leds[-1]
+        self.assertTrue(listening)
+        self.assertEqual((leds[0]["r"], leds[0]["g"], leds[0]["b"]), (0, 150, 70))
+
+    async def test_unknown_state_goes_dark(self) -> None:
+        adapter = make_adapter()
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        await adapter.set_led("nonsense")
+        leds, _ = link.leds[-1]
+        self.assertEqual((leds[0]["r"], leds[0]["g"], leds[0]["b"]), (0, 0, 0))
+
+
+class Volume255Test(unittest.IsolatedAsyncioTestCase):
+    async def test_at_ceiling_the_projection_matches_config(self) -> None:
+        adapter = make_adapter()
+        # Both sides use Python's round(): round(30 * 255 / 100) == 76, and the
+        # value only has to agree exactly with what rui's reconciler computes.
+        self.assertEqual(adapter.volume_255(), round(30 * 255 / 100))
+
+    async def test_services_set_volume_is_clamped_to_the_ceiling(self) -> None:
+        adapter = make_adapter()
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        await adapter.services.set_volume(200)  # loud console request
+        self.assertEqual(link.volumes[-1], 30.0)  # never above the cap
+        await adapter.services.set_volume(77)
+        self.assertEqual(link.volumes[-1], 30.0)
+
+    async def test_read_volume_returns_the_255_projection(self) -> None:
+        adapter = make_adapter()
+        self.assertEqual(await adapter.read_volume(), round(30 * 255 / 100))
 
 
 class VolumeMappingTest(unittest.TestCase):

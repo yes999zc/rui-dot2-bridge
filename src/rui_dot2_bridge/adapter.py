@@ -30,7 +30,7 @@ from house_ear.device.contract import (
 
 from .device_link import DeviceLink
 from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE
-from .volume import VOLUME_CAP_PERCENT, clamp_percent
+from .volume import VOLUME_CAP_PERCENT, capped_level, clamp_percent
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +40,44 @@ def _rechunk(pcm: bytes, channels: int, frame_ms: int) -> list[bytes]:
     if step <= 0:
         raise ValueError("frame_ms too small")
     return [pcm[i : i + step] for i in range(0, len(pcm), step)]
+
+
+#: The Dot 2 ring is 12 LEDs (id 0..11). Values are 0-255 per channel and
+#: deliberately modest: the ring exists for feedback, not for lighting a room.
+LED_COLORS: dict[str, tuple[int, int, int]] = {
+    "off": (0, 0, 0),
+    "idle": (0, 0, 0),
+    "listening": (0, 150, 70),
+    "wake": (0, 150, 70),
+    "thinking": (0, 40, 160),
+    "speaking": (0, 110, 150),
+    "error": (170, 0, 0),
+    "music": (100, 0, 140),
+    "music_paused": (120, 60, 0),
+    "muted": (120, 0, 0),
+}
+LED_COUNT = 12
+
+
+def _ring(rgb: tuple[int, int, int]) -> list[dict]:
+    r, g, b = rgb
+    return [{"id": i, "r": r, "g": g, "b": b} for i in range(LED_COUNT)]
+
+
+class _Dot2Services:
+    """The optional device services rui probes: volume now, shell never."""
+
+    def __init__(self, adapter: "Dot2Adapter") -> None:
+        self._adapter = adapter
+
+    async def shell(self, script: str, timeout: float = 3.0) -> str:
+        raise NotImplementedError("the Dot 2 adapter exposes no shell")
+
+    async def read_volume(self) -> int | None:
+        return self._adapter.volume_255()
+
+    async def set_volume(self, volume: int) -> None:
+        await self._adapter.set_volume_255(int(volume))
 
 
 DEFAULT_TLS_PORT = 8870
@@ -100,7 +138,9 @@ class Dot2Adapter(DeviceAdapter):
         # person in the room (e.g. feed it to /api/v1/asr). Off unless asked for.
         self._record_path = os.environ.get("DOT2_RECORD") or ""
         self._record_wav: wave.Wave_write | None = None
-        capabilities: set[Capability] = {Capability.PLAYBACK, Capability.VOLUME}
+        capabilities: set[Capability] = {
+            Capability.PLAYBACK, Capability.VOLUME, Capability.LED,
+        }
         if self.ref_channels > 0:
             capabilities.add(Capability.REFERENCE)
         if self.mic_channels > 1:
@@ -121,6 +161,29 @@ class Dot2Adapter(DeviceAdapter):
         )
 
     # ---------------------------------------------------------------- health
+    @property
+    def services(self) -> _Dot2Services:
+        return _Dot2Services(self)
+
+    # ------------------------------------------------------------ volume (255)
+    # rui's reconcile path speaks the LX06's mixer scale (0-255) and compares
+    # for equality, so both directions have to agree exactly or it rewrites the
+    # volume every cycle. At the ceiling the answer is the ceiling's 0-255
+    # projection; anywhere else it is the device level scaled across.
+    def volume_255(self) -> int | None:
+        if self._link is None:
+            return None
+        ceiling = round(self.volume_cap_percent * 255 / 100)
+        if self._link.volume_level == capped_level(self.volume_cap_percent):
+            return ceiling
+        return round(self._link.volume_level * 255 / 127)
+
+    async def read_volume(self) -> int | None:
+        return self.volume_255()
+
+    async def set_volume_255(self, volume: int) -> None:
+        await self.set_volume(round(max(0, min(255, volume)) * 100 / 255))
+
     def health(self) -> dict:
         """The plane's `speaker_connected` and the console read this."""
         link = self._link
@@ -272,8 +335,18 @@ class Dot2Adapter(DeviceAdapter):
         await self._link.set_volume_percent(clamp_percent(volume, self.volume_cap_percent))
 
     async def set_led(self, effect: str, color: str = "", *, repaint: bool = False) -> None:
-        """No LED capability is advertised yet; keep the hook quiet and honest."""
-        log.debug("dot2 adapter: set_led(%s) ignored (LED not advertised)", effect)
+        """Paint the 12-LED ring for a rui state. Unknown states go dark, not stale."""
+        if self._link is None:
+            return
+        rgb = LED_COLORS.get(effect, (0, 0, 0))
+        if color:
+            raw = color.lstrip("#")
+            if len(raw) == 6:
+                try:
+                    rgb = (int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16))
+                except ValueError:
+                    pass
+        await self._link.set_leds(_ring(rgb), listening=effect in ("listening", "wake"))
 
 
 def build(dev, cfg) -> Dot2Adapter:  # noqa: ANN001 - rui's DeviceConfig/Config
