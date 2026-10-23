@@ -37,7 +37,7 @@ def frame(channels: int, samples: int, n: int) -> bytes:
     ref = [int(0.2 * 32767 * math.sin(2 * math.pi * 440 * t)) for t in
            ((n * samples + i) / 16000.0 for i in range(samples))]
     interleaved = []
-    for m, r in zip(mic, ref):
+    for m, r in zip(mic, ref, strict=True):
         interleaved.extend((m, r))
     return bytes([0x01]) + struct.pack(f"<{samples * 2}h", *interleaved)
 

@@ -53,7 +53,7 @@ def tone(seconds: float = 1.0, freq: float = 440.0, amplitude: float = 0.9) -> b
     )
 
 
-async def start_inject_server(adapter: "Dot2Adapter", host: str, port: int) -> asyncio.Server:
+async def start_inject_server(adapter: Dot2Adapter, host: str, port: int) -> asyncio.Server:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             line = await asyncio.wait_for(reader.readline(), timeout=5.0)

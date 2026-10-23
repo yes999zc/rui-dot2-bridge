@@ -82,9 +82,20 @@ adb shell su -c 'readlink /data/local/bin/server'   # 当前槽
 adb shell su -c 'ln -sf server_a /data/local/bin/server && kill $(pidof server)'  # 回退
 ```
 
-## 6. 常用命令
+## 6. 常用命令 / 新工具
 
 ```bash
+# 一条命令自检（语法、单测、配置、ruff、doctor）
+./scripts/check.sh
+
+# 部署前体检（证书权限、配置布局、端口、rui 健康、设备音量上限；NAS 上也能跑）
+python scripts/doctor.py --config dev/rui/config.yaml --secrets secrets
+python scripts/doctor.py --device        # 额外通过 adb 检查设备端（Mac 上）
+
+# 设备侧健康快照（麦克风连续流、AEC、音量、内存、当前连的是不是我们）
+python scripts/device_health.py
+# → 期望：stalls=0 sub_drops=0、volume 38/127、endpoint wss://…:8870、problems none
+
 curl -s http://127.0.0.1:8091/health | python3 -m json.tool | head -14
 curl -s http://127.0.0.1:8091/api/v1/audio | python3 -m json.tool | head -30
 curl -s http://127.0.0.1:8091/api/v1/device/volume

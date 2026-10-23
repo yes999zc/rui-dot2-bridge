@@ -28,7 +28,7 @@ import wave
 from pathlib import Path
 
 from .device_link import DeviceLink
-from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE, mic_dbfs
+from .frames import MIC_RATE, SPEAKER_RATE, mic_dbfs
 from .volume import VOLUME_CAP_PERCENT, capped_level
 
 log = logging.getLogger("rui_dot2_bridge.standalone")

@@ -27,12 +27,10 @@ import json
 import re
 import statistics
 import time
-from collections import deque
-from dataclasses import dataclass, field
+import urllib.request
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-
-import urllib.request
 
 WAKE_RE = re.compile(r"\d{2}:\d{2}:\d{2},\d{3}.*wake: (.+)$")
 FIRST_CHUNK_RE = re.compile(r"\d{2}:\d{2}:\d{2},\d{3}.*reply: first chunk at (\d+) Hz")

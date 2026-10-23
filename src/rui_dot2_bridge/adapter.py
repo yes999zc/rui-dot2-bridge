@@ -17,8 +17,8 @@ import logging
 import os
 import time
 import wave
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator
 
 from house_ear.device.contract import (
     AudioFrame,
@@ -67,7 +67,7 @@ def _ring(rgb: tuple[int, int, int]) -> list[dict]:
 class _Dot2Services:
     """The optional device services rui probes: volume now, shell never."""
 
-    def __init__(self, adapter: "Dot2Adapter") -> None:
+    def __init__(self, adapter: Dot2Adapter) -> None:
         self._adapter = adapter
 
     async def shell(self, script: str, timeout: float = 3.0) -> str:

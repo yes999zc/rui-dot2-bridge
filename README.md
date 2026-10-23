@@ -54,6 +54,11 @@ docs/p2-runbook.md      P2 真人实测 runbook（唤醒/打断/误唤醒，含�
 docs/deploy.md          部署与回滚 runbook
 src/rui_dot2_bridge/    adapter 实现（Phase 1 起填充）
 src/sitecustomize.py    注入 rui 进程完成 adapter 注册（不改 rui 仓库）
+scripts/check.sh        一条命令自检：语法 / 单测 / 配置 / ruff / doctor
+scripts/doctor.py       部署前体检（证书、配置、端口、rui、设备音量上限）
+scripts/device_health.py  设备侧健康快照（mic 连续流 / AEC / 音量 / 内存 / 连的是谁）
+scripts/p2_trials.py    P2 真人唤醒/打断测量记录器
+scripts/soak.py         长稳记录（每分钟一行 JSONL）
 ROADMAP.md              分阶段计划与验收标准
 ```
 
