@@ -57,6 +57,16 @@
 - 同时启动了 8 小时 soak 记录（`scripts/soak.py` → `dev/rui/soak.jsonl`），早上可直接看
   重连次数/平面重启次数/唤醒计数；这是 P4 的 24 h 证据的前半段。
 
+### 回滚与音量上限（2026-10-24 02:54–02:58 实测）
+
+- 杀 adapter → 设备 40 s 内落到 `controller.json` endpoints[1] 的旧 EchoMuse controller
+  （old-controller DB `last_seen` 从 02:25 跳到 02:54:30），**自动回滚成立**；
+- 恢复 adapter、停旧 controller → 设备 45 s 内回到本项目，设备日志 `Volume set to 38/127`，
+  `/tmp/em-config.json` 的 `received.startupVolume=38`（上限已持久化）；
+- **发现**：旧 controller 接管时会按 HA 的 volume 状态把音量推成 `0.669`（= 85/127），
+  不理会我们的 30% 上限。所以无人值守时它保持停止；启用它做回滚演练前要先把它的设备音量改成 0.3。
+- rui 控制台现在能看到设备音量（0–255 刻度显示 **76**，即 30%），任何入口的请求都仍被夹到 30%。
+
 ### 唤醒（KWS）—— 需要人，已量化差距
 
 同一段录音离线喂 rui 的 KWS 模型（`tools/score_wake.py`，与线上同一模型/keywords）：
