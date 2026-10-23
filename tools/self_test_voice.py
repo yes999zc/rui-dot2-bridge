@@ -68,50 +68,58 @@ def main() -> int:
     # cue ~490 ms), then opens a 5 s window. Speaking before the hold ends is discarded;
     # speaking after the window is another idle session. 2.1 s lands inside it.
     parser.add_argument("--settle", type=float, default=2.1)
+    parser.add_argument("--attempts", type=int, default=1,
+                        help="retry the whole wake+command sequence (self-injection is intermittent)")
     parser.add_argument("--repeat-command", action="store_true",
                         help="send the command a second time 0.7 s later (hold overshoot)")
     args = parser.parse_args()
 
     before = {t.get("ts") for t in turns(args.api)}
-    wake_count = metrics(args.api).get("wake_count", 0)
 
-    print(f"1) wake word: {args.wake}")
-    print("  ", inject(args.inject_port, args.wake))
-    woke = wait_for(lambda: metrics(args.api).get("wake_count", 0) > wake_count, 6.0)
-    print(f"   wake detected: {woke}")
-    if not woke:
-        print("   no wake crossing; check the recording at the configured DOT2_RECORD path")
-        return 1
+    def new_turn() -> dict | None:
+        return next((t for t in turns(args.api)
+                     if t.get("ts") not in before and t.get("transcript")), None)
 
-    # No gate polling: the metric named gate_armed belongs to the follow-up gate, not
-    # the wake window (that mistake cost a full evening - the command was injected
-    # seconds after the wake window had already closed).
-    print(f"2) settling {args.settle:.1f} s so the ack cue's hold ends")
-    time.sleep(args.settle)
+    for attempt in range(1, max(1, args.attempts) + 1):
+        print(f"\n=== attempt {attempt}/{args.attempts} ===")
+        wake_count = metrics(args.api).get("wake_count", 0)
+        print(f"1) wake word: {args.wake}")
+        print("  ", inject(args.inject_port, args.wake))
+        if not wait_for(lambda: metrics(args.api).get("wake_count", 0) > wake_count, 6.0):
+            print("   no wake crossing; retrying")
+            time.sleep(2.0)
+            continue
+        print("   wake detected")
 
-    print(f"3) command: {args.command}")
-    print("  ", inject(args.inject_port, args.command))
-    if args.repeat_command:
-        time.sleep(0.7)
-        print("   repeat:", inject(args.inject_port, args.command))
+        # No gate polling: the metric named gate_armed belongs to the follow-up gate,
+        # not the wake window (that mistake cost a full evening - the command was
+        # injected seconds after the wake window had already closed). The wake window
+        # starts after cue + ack.echo_ignore_ms (default 490 + 1200 = 1.69 s).
+        print(f"2) settling {args.settle:.1f} s so the ack cue's hold ends")
+        time.sleep(args.settle)
 
-    def got_turn() -> bool:
-        return any(t.get("ts") not in before and t.get("transcript") for t in turns(args.api))
+        print(f"3) command: {args.command}")
+        print("  ", inject(args.inject_port, args.command))
+        if args.repeat_command:
+            time.sleep(0.7)
+            print("   repeat:", inject(args.inject_port, args.command))
 
-    if not wait_for(got_turn, args.timeout, interval=0.5):
-        print("   no turn recorded (wake heard, command not transcribed?)")
-        return 1
+        if wait_for(lambda: new_turn() is not None, args.timeout, interval=0.5):
+            turn = new_turn() or {}
+            print("4) turn:", json.dumps({k: turn.get(k) for k in
+                                          ("ts", "transcript", "reply", "audio_bytes", "error")},
+                                         ensure_ascii=False))
+            stages = turn.get("stages") or {}
+            if stages:
+                print("   stages:", {k: v.get("used") for k, v in stages.items()})
+            ok = bool(turn.get("transcript")) and bool(turn.get("reply")) and not turn.get("error")
+            print("RESULT:", "ok" if ok else "failed")
+            return 0 if ok else 1
+        print("   wake heard but no turn; letting the session close before retrying")
+        time.sleep(6.0)
 
-    turn = next(t for t in turns(args.api) if t.get("ts") not in before and t.get("transcript"))
-    print("4) turn:", json.dumps({k: turn.get(k) for k in
-                                  ("ts", "transcript", "reply", "audio_bytes", "error")},
-                                 ensure_ascii=False))
-    stages = turn.get("stages") or {}
-    if stages:
-        print("   stages:", {k: v.get("used") for k, v in stages.items()})
-    ok = bool(turn.get("transcript")) and bool(turn.get("reply")) and not turn.get("error")
-    print("RESULT:", "ok" if ok else "failed")
-    return 0 if ok else 1
+    print("RESULT: no turn after all attempts")
+    return 1
 
 
 if __name__ == "__main__":
