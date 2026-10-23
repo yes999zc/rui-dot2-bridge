@@ -1,0 +1,21 @@
+# Credentials and device material — never commit.
+secrets/
+*.pem
+*.key
+*.crt
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Captured protocol traces may contain the device token.
+docs/trace/*.raw
+docs/trace/*.jsonl
+
+# macOS
+.DS_Store
