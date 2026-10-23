@@ -47,6 +47,16 @@
   - 18–21 s → **「小瑞，现在几点？」**
 - 结论：**扬声器 → 空气 → 7 麦 → 设备 AEC/波束 → S16 mono → adapter → rui ASR** 这条声学路径成立。
 
+### 鲁棒性（2026-10-24 02:46 实测）
+
+- 直接 `kill -9` 音频面子进程（监听 8870 的那个）：
+  - 6 s 内 rui 的 watchdog 判定 `audio plane reader stopped: IncompleteReadError`；
+  - **3 s 后平面重建**（`audio plane restarted (#1, pid=94653)`）；
+  - 又 3 s 设备重新 `register`、`speaker_connected` 回到 `true`，全程**不需要重启 rui、不需要动设备**；
+  - 说明"平面崩溃 → 重新拉起 → 设备自己拨回来"这条链在真机上成立。
+- 同时启动了 8 小时 soak 记录（`scripts/soak.py` → `dev/rui/soak.jsonl`），早上可直接看
+  重连次数/平面重启次数/唤醒计数；这是 P4 的 24 h 证据的前半段。
+
 ### 唤醒（KWS）—— 需要人，已量化差距
 
 同一段录音离线喂 rui 的 KWS 模型（`tools/score_wake.py`，与线上同一模型/keywords）：

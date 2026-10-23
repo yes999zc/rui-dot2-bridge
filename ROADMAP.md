@@ -231,6 +231,7 @@
 | P2 唤醒/打断 | ⬜ 等人 | 工具与配置就绪；自测音量低约 20 dB，真人实测是唯一可信口径 |
 | P3 rui 接管 AEC | ⬜ 条件项 | 离线验证已完成（参考重建收益 ≈31 dB）；需 Go/NDK 工具链构建固件，且必须真人回归 |
 | P4 NAS 生产化 | ⬜ 等人 | 需要 NAS 上 rui 容器卷路径 + 验收日后的镜像更新；override 与 runbook 已备好 |
+| 鲁棒性 | ✅ 已实测 | 杀掉音频面 → watchdog 3 s 重建 → 设备 3 s 重连；8 h soak 已启动（`scripts/soak.py`） |
 
 代码侧：`device_link.py`（设备协议）、`adapter.py`（rui 契约）、`standalone.py`（无 rui 探针）、
 `inject.py`（仅测试用注入）、`volume.py`（30% 上限）、18 个单测通过；`dev_rui.sh` 一条命令起本机 rui。
