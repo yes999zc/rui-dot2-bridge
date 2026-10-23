@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import json
 import socket
-import sys
 import time
 import urllib.request
 
@@ -65,6 +64,12 @@ def main() -> int:
     parser.add_argument("--wake", required=True)
     parser.add_argument("--command", required=True)
     parser.add_argument("--timeout", type=float, default=25.0)
+    # After a wake the plane holds the gate for cue + ack.echo_ignore_ms (default 1200 ms,
+    # cue ~490 ms), then opens a 5 s window. Speaking before the hold ends is discarded;
+    # speaking after the window is another idle session. 2.1 s lands inside it.
+    parser.add_argument("--settle", type=float, default=2.1)
+    parser.add_argument("--repeat-command", action="store_true",
+                        help="send the command a second time 0.7 s later (hold overshoot)")
     args = parser.parse_args()
 
     before = {t.get("ts") for t in turns(args.api)}
@@ -78,13 +83,17 @@ def main() -> int:
         print("   no wake crossing; check the recording at the configured DOT2_RECORD path")
         return 1
 
-    armed = wait_for(lambda: metrics(args.api).get("gate_armed") is True, 5.0)
-    print(f"2) gate armed: {armed}")
-    if not armed:
-        return 1
+    # No gate polling: the metric named gate_armed belongs to the follow-up gate, not
+    # the wake window (that mistake cost a full evening - the command was injected
+    # seconds after the wake window had already closed).
+    print(f"2) settling {args.settle:.1f} s so the ack cue's hold ends")
+    time.sleep(args.settle)
 
     print(f"3) command: {args.command}")
     print("  ", inject(args.inject_port, args.command))
+    if args.repeat_command:
+        time.sleep(0.7)
+        print("   repeat:", inject(args.inject_port, args.command))
 
     def got_turn() -> bool:
         return any(t.get("ts") not in before and t.get("transcript") for t in turns(args.api))

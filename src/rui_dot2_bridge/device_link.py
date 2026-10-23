@@ -23,9 +23,10 @@ import logging
 import ssl
 import time
 from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any
 
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
@@ -34,7 +35,6 @@ from .frames import (
     FRAME_MIC,
     FRAME_NO_SPEECH_TIMEOUT,
     FRAME_VAD_END,
-    SPEAKER_CHUNK_BYTES,
     speaker_eos,
     split_playback,
 )
