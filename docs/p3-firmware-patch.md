@@ -1,9 +1,17 @@
 # P3 固件补丁计划：把「去混叠参考」交给 rui
 
-> 状态：**已核实上游代码路径，未编译、未烧写**。触发条件是 P2 的 Gate G1 判定
-> "单声道不够"。adapter 侧已经就绪（`DOT2_REF_CHANNELS=1` → 2ch AudioFrame + `REFERENCE` 能力）。
+> 状态：**补丁已写好（3 文件 +68 行）、交叉编译在验证中，未烧写**。触发条件是 P2 的
+> Gate G1 判定"单声道不够"。adapter 侧已经就绪（`DOT2_REF_CHANNELS=1` → 2ch AudioFrame +
+> `REFERENCE` 能力）。
 
-上游版本：EchoMuse tag **`v2.18.1`**（commit `b18a0be`），与设备上的固件同版本。
+**基线版本：`v2.19.0-ea.1`（不是设备现在的 v2.18.1）。** 原因：去混叠参考
+（`device/internal/aec/dealias.go`）在 commit `63c0fe9`（2026-10-19）才落地，
+`v2.18.1` 里没有；包含它的最早 tag 是 `v2.19.0-ea.1`。把 dealias 反向移植进 v2.18.1
+要做的事更多、风险更大，所以选它之后的第一个 tag 作基线。
+
+- 补丁文件：`patches/0001-ref-uplink-v2.19.0-ea.1.patch`
+- 构建脚本：`scripts/build_p3_firmware.sh`（clone → apply → 编译镜像 → 交叉编译 → sha256）
+- 设备现在跑的是 `v2.18.1`；装补丁机等于升级到 `v2.19.0-ea.1-dev`（EA 版本，需 9 哥决定是否接受）
 设备安装是 **A/B 双槽 + 自动回滚**（`/data/local/bin/server -> server_a`，`start_server.sh`
 在 3 次 <15 s 的快速退出后自动把符号链接换回去并退出让 init 重启），所以试点是安全的。
 
@@ -111,13 +119,32 @@ data.SetRefUplink(hasFeature(first.Features, "dot2_hw_ref"))
 ## 构建
 
 ```bash
-git clone --depth 1 --branch v2.18.1 https://github.com/wilbowes/EchoMuse.git /tmp/echomuse-p3
-# GoTinyAlsa 是 sibling 目录（compile.sh 会把它挂进容器）
-cd /tmp/echomuse-p3/device
-docker build -t echomuse-compiler compiler      # 首次：NDK21 + Go 1.24 镜像
-./compile.sh                                     # 产物 build/server，版本号自动带 -dev
-sha256sum build/server
+# 一条命令（clone + apply + 建镜像 + 交叉编译）
+./scripts/build_p3_firmware.sh /tmp/echomuse-p3-build
+
+# 等价的手工步骤
+git clone --depth 1 --branch v2.19.0-ea.1 https://github.com/wilbowes/EchoMuse.git /tmp/echomuse-p3
+git -C /tmp/echomuse-p3 apply --index patches/0001-ref-uplink-v2.19.0-ea.1.patch
+cd /tmp/echomuse-p3/device && docker build -t echomuse-compiler compiler && ./compile.sh
+shasum -a 256 build/server
 ```
+
+## 构建结果（2026-10-24 02:52 实测，未烧写）
+
+| 项 | 值 |
+|---|---|
+| 基线 | EchoMuse `v2.19.0-ea.1` + `patches/0001-ref-uplink-v2.19.0-ea.1.patch`（3 文件 +68 行） |
+| 工具链 | `echomuse-compiler`（Go 1.24.0 + NDK 21.4，`ghcr.io/binozo/echogo@sha256:c945…`） |
+| 产物 | `device/build/server`，12,550,875 B，**ELF 32-bit ARM**（Go，动态链接 `/system/bin/linker`） |
+| 版本串 | `20261024-0251-dev` |
+| sha256 | `876f63b4de53b826758bb465c67e183e3098ea58d6eacace9e3ccfa33b2e55dc` |
+| 新符号 | `(*Canceller).RefForUplink`；字符串 `ref_uplink`、`dot2_hw_ref` 均在二进制里 |
+
+两个构建坑（已修进 `scripts/build_p3_firmware.sh`）：
+1. `GoTinyAlsa` 是 **git submodule**，不执行 `git submodule update --init` 会在容器里报
+   `reading /GoTinyAlsa/go.mod: no such file`；
+2. Docker buildx 会写 `~/.docker/buildx`（本机沙箱外，EPERM）→ 用工作区内的
+   `DOCKER_CONFIG`，脚本里已处理。
 
 ## 安装 / 验证 / 回滚（用设备已有的 A/B 槽）
 

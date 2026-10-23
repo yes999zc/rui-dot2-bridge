@@ -27,3 +27,4 @@ dev/rui/audio.sock
 dev/rui/config.last-good.yaml
 dev/rui/p2-trials.jsonl
 dev/rui/soak*
+.docker/
