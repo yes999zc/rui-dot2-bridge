@@ -3,6 +3,20 @@
 前提：Dot 2 已解锁、已装 EchoMuse 设备端 v2.18.1、controller 证书与设备 token 都在。
 旧链路（EchoMuse controller + HA）**先保留**，它是回滚路径。
 
+## 0. 两个部署位置
+
+| 目标 | 位置 | 用途 |
+|---|---|---|
+| rui 生产 | NAS `<lan-ip>:8080`（v0.0.1，`/health` 正常，当前 1 台 LX06 在线） | adapter 最终要挂进这里的 rui 容器（x86_64） |
+| 开发/标定 | 本机 `01_Code/projects/house-ear` 的 checkout + 13 个本地 `house-ear:*` 镜像 | 改 adapter 时本机跑，不动 NAS |
+
+> rui 处于 **v1 冻结期**（`docs/v1-freeze.md`：只做四道发布门槛，不改代码）。
+> 本项目的接入方式正好不需要改 rui 代码，只加挂载和配置，冲突面为零。
+> NAS 上的 rui 还是上一版镜像，等验收日统一更新；adapter 可以等它更新后再挂。
+
+> 两份部署的路径不同：本机是 `/home/user/...`，NAS 上是它自己的卷路径（x86_64）。
+> 证书和 `sitecustomize.py` 都要各放一份；`secrets/` 不进 git。
+
 ## 0. 素材准备
 
 ```bash

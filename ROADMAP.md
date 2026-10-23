@@ -96,25 +96,36 @@
 
 ---
 
-## P3 — 多声道升级（条件触发，1–1.5 周）
+## P3 — rui 接管 AEC（条件触发，1–1.5 周）
 
-**只在上一个 Gate 判定"单声道不够"时做。**
+**只在上一个 Gate 判定"单声道不够"时做。** 完整分析见 [`docs/aec-takeover.md`](docs/aec-takeover.md)。
 
 **做什么**
 
-1. Fork EchoMuse 设备端（Go），新增一个能力（如 `raw_multichannel`）：把原始 9 声道 S24→S16（ch0-6 麦克风 + ch7/8 播放回采）按新帧类型送上行；
-2. 用上游 `device/compile.sh` + `compiler/Dockerfile` 交叉编译，`adb push` 替换 `/data/local/bin/server`（**不需要重新跑配置向导**）；
-3. adapter 把上行映射成 `AudioFrame(channels=9, mic_channels=7, reference_channels=2)`，rui 自己做 AEC/波束，宣告 `REFERENCE`；
-4. 下行保持 48 kHz 不变。
+1. Fork EchoMuse 设备端（Go），开一个 ack 协商的能力 `dot2_hw_ref`：
+   上行从 1ch 改成 **2ch = 波束 mono（预 AEC）+ 去混叠后的 ch8 参考**（仍是 `0x01` 帧，旧 controller 仍收单声道）；
+   同时保持参考抽取链路常开（关掉设备 AEC 后 `WriteFar` 要照跑，否则 `dealias` 无输出环可用）。
+2. 通过现有 `config` 推送 `aecEnabled:false`，让设备不再做 7 麦 speex（省单核 19%）。
+3. 用上游 `device/compile.sh` + `compiler/Dockerfile` 交叉编译，`adb push` 替换 `/data/local/bin/server`（**不需要重新跑配置向导**）。
+4. adapter 把上行映射成 `AudioFrame(channels=2, mic_channels=1, reference_channels=1)`，宣告 `REFERENCE`；
+   rui 的 AEC 自动启用（`aec.enabled=true, cancel=mix`），控制台看 `aec_erle_db`。
+5. 下行保持 48 kHz 不变。
+
+**关键坑（已确认，别踩）**：ch8 是 48 kHz 输出每 3 取 1 塞进 16 kHz 采集、**没有抗混叠**。
+raw ch8 送进 AEC 实测只有 1 dB 消除，用输出重建参考后 25.7 dB。所以参考必须走 `dealias` 重建，不能直接转发。
 
 **验收**
 
-- rui 侧 ERLE ≥ 20 dB（与 LX06 线上数据同量级）；
-- 播放中 barge-in 可用，误唤醒不高于 P2 水平；
-- 上行带宽实测 ≤ 300 KB/s，Dot 2 内存占用无退化（可用内存仍 > 100 MB）；
-- 设备断电重启后自动回到 adapter。
+- rui 控制台 `aec_erle_db` ≥ 20 dB（与设备 AEC 基线同量级）；
+- 播放中 barge-in 可用，误唤醒不高于 P2 水平；打断静音 P50 ≤ 600 ms；
+- 上行带宽实测 ≤ 70 KB/s，Dot 2 可用内存 > 100 MB、CPU 不高于改动前；
+- 设备断电重启后自动回到 adapter；
+- 关掉 `dot2_hw_ref` 协商即回退到单声道 + 设备 AEC（无需重刷）。
 
-**风险**：固件改动是**唯一会碰设备的阶段**；先在离线路由验证二进制，保留旧 `server` 二进制可随时 `adb push` 回滚；不要在同一次改动里做 emOS 切换。
+**风险**：固件改动是**唯一会碰设备的阶段**；也意味着从"用上游发布版"变成"维护一个 fork"。
+先在离线路由用离线抓包验证 `dealias` + speex 的可达 ERLE，再上设备；旧 `server` 二进制留档，`adb push` 秒级回滚；不要在同一次改动里做 emOS 切换。
+
+**8ch（7 麦 + 参考）只作为实验**：rui 的 per-channel 拓扑实测 20.9 dB，低于 mix 的 25.2 dB，且带宽 4 倍。除非要测天线/波束算法，不排期。
 
 ---
 

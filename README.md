@@ -36,6 +36,8 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 | EchoMuse controller（旧链路） | ✅ 可用，作为回滚路径保留 |
 | 设备协议与 PCM 格式核实 | ✅ 2026-10-24（读 EchoMuse 上游源码） |
 | rui adapter 接入点核实 | ✅ 2026-10-24（读 rui 源码） |
+| rui 生产部署 | ✅ NAS `<lan-ip>:8080`（v0.0.1，1 台 LX06 在线，`/health` 正常） |
+| rui 接管 AEC 可行性 | ✅ 已分析：2ch 方案，零改 rui（[`docs/aec-takeover.md`](docs/aec-takeover.md)） |
 | dot2 adapter 代码 | ⬜ Phase 1 |
 | 唤醒 / barge-in 标定 | ⬜ Phase 2 |
 
@@ -45,6 +47,7 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 docs/findings.md        事实清单，每条带源码出处
 docs/adr-0001-…md       为什么用 adapter 顶替 controller（含被否决的方案）
 docs/protocol-map.md    设备帧 ↔ rui AudioFrame 映射、时序
+docs/aec-takeover.md    rui 接管 AEC 的可行性（2ch 方案、ch8 去混叠坑、验收口径）
 docs/deploy.md          部署与回滚 runbook
 src/rui_dot2_bridge/    adapter 实现（Phase 1 起填充）
 src/sitecustomize.py    注入 rui 进程完成 adapter 注册（不改 rui 仓库）
