@@ -232,6 +232,8 @@
 | P3 rui 接管 AEC | ⬜ 条件项 | 离线验证已完成（参考重建收益 ≈31 dB）；需 Go/NDK 工具链构建固件，且必须真人回归 |
 | P4 NAS 生产化 | ⬜ 等人 | 需要 NAS 上 rui 容器卷路径 + 验收日后的镜像更新；override 与 runbook 已备好 |
 | 鲁棒性 | ✅ 已实测 | 杀掉音频面 → watchdog 3 s 重建 → 设备 3 s 重连；8 h soak 已启动（`scripts/soak.py`） |
+| 音量 / 灯 / 回滚 | ✅ 已实测 | 音量 30% 全链路强制且控制台可见（76/255）；12 灯接 rui 状态；杀 adapter → 设备 40 s 落到旧 controller，恢复后 45 s 回到本项目（旧 controller 接管会推 85/127，故无人值守时保持停止） |
+| P3 固件补丁 | ✅ 已编译未安装 | `v2.19.0-ea.1` + `patches/0001-ref-uplink-*.patch`，ARM 产物 sha256 `876f63b4…`；2ch 链路已用假设备在 rui 里验证 |
 
 代码侧：`device_link.py`（设备协议）、`adapter.py`（rui 契约）、`standalone.py`（无 rui 探针）、
 `inject.py`（仅测试用注入）、`volume.py`（30% 上限）、18 个单测通过；`dev_rui.sh` 一条命令起本机 rui。
