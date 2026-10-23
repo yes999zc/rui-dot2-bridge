@@ -77,6 +77,13 @@ cat /data/local/etc/echomuse/controller.json
 # {"endpoints":[{"host":"192.168.5.18","port":8867,"tls_port":8870},
 #               {"host":"192.168.5.18","port":8767,"tls_port":8770}],"mdns":false}
 
+# NAS 部署包（不含任何密钥；到 NAS 上再放 secrets/）
+./scripts/make_deploy_bundle.sh
+# → artifacts/rui-dot2-bridge-<时间>.tar.gz（76 KB，含 src/deploy/patches/docs/tools + sha256）
+
+# 夜间长稳报告（soak 仍在跑时也会生成 partial 版）
+python scripts/soak_report.py
+
 # 固件槽（仅 P3 安装后相关）
 adb shell su -c 'readlink /data/local/bin/server'   # 当前槽
 adb shell su -c 'ln -sf server_a /data/local/bin/server && kill $(pidof server)'  # 回退

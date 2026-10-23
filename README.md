@@ -28,18 +28,19 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 2. **设备支持静态 controller 地址**，不必依赖 mDNS：`/data/local/etc/echomuse/controller.json` → `{"endpoints":[{"host":"…","port":8767,"tls_port":8770}],"mdns":false}`。老项目里那条 `dns-sd -P` 前台进程可以彻底不要。
 3. **rui 的设备层就是为"加一个 adapter"设计的**：`DeviceAdapter` 契约 + `AdapterName` 已是普通字符串 + `registry.register(name, target)` 钩子。adapter 可以放在**本仓库**，不需要改 rui 任何文件。
 
-## 现状
+## 现状（2026-10-24 03:1x）
 
 | 项 | 状态 |
 |---|---|
 | Dot 2 解锁 / root / EchoMuse 设备端 v2.18.1 | ✅ 已就绪（见 `hermes-dot2-voice`） |
-| EchoMuse controller（旧链路） | ✅ 可用，作为回滚路径保留 |
-| 设备协议与 PCM 格式核实 | ✅ 2026-10-24（读 EchoMuse 上游源码） |
-| rui adapter 接入点核实 | ✅ 2026-10-24（读 rui 源码） |
-| rui 生产部署 | ✅ NAS `192.168.5.168:8080`（v0.0.1，1 台 LX06 在线，`/health` 正常） |
-| rui 接管 AEC 可行性 | ✅ 已分析：2ch 方案，零改 rui（[`docs/aec-takeover.md`](docs/aec-takeover.md)） |
-| dot2 adapter 代码 | ⬜ Phase 1 |
-| 唤醒 / barge-in 标定 | ⬜ Phase 2 |
+| **P1 adapter（可运行）** | ✅ 真机实测：register/ack、单声道 80ms→20ms、48k 播放、EOS/flush、30% 音量强制、12 灯 LED、34 单测 |
+| **rui 端到端** | ✅ 文本回合 + TTS 出声（`periods=131 underruns=0`）；声学回采 ASR 转写正确；`audio_plane/speaker_connected` 在线 |
+| **唤醒** | 🟡 30% 音量下已实测到真实 `wake: 你好小瑞`（讯飞音色）；唤醒率/误唤醒等真人 P2 标定 |
+| **回滚** | ✅ 杀 adapter → 设备 40 s 落到旧 controller；恢复后 45 s 回来（旧 controller 接管会推 85/127，故无人值守时保持停止） |
+| **P3 固件补丁** | ✅ 已编译未安装（`v2.19.0-ea.1` + patch，sha256 `876f63b4…`）；2ch 链路已用假设备在 rui 里验证 |
+| **工具链** | ✅ `scripts/check.sh`、`doctor.py`、`device_health.py`、`p2_trials.py`、`soak.py`；ruff 干净 |
+| rui 生产部署（NAS） | ⬜ 待 NAS 部署目录 + 验收日镜像更新；override/runbook 已备好 |
+| 旧 EchoMuse controller | 容器保留可启动，默认停止（30% 音量约束） |
 
 ## 目录
 
