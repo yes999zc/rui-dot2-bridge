@@ -1,0 +1,152 @@
+diff --git a/device/internal/aec/aec.go b/device/internal/aec/aec.go
+index cf495f4..8ce3d0f 100644
+--- a/device/internal/aec/aec.go
++++ b/device/internal/aec/aec.go
+@@ -262,6 +262,22 @@ func (c *Canceller) HardwareRef() bool {
+ 	return c.hwRef
+ }
+ 
++// RefForUplink returns one captured period's hardware reference with the ch8
++// decimation aliases removed, for a controller that cancels echo itself
++// (feature "dot2_hw_ref"). It cancels nothing, so it is valid while
++// aecEnabled=false — which is the point: the device stops running seven
++// speex filters and the controller gets the same clean reference.
++//
++// The output ring it needs is fed by WriteFar on every speaker period,
++// regardless of the cancellation switch. clean() carries its own ring lock and
++// runs on the mic goroutine, the same side Process* calls it from.
++func (c *Canceller) RefForUplink(rawRef []byte) []byte {
++	if rawRef == nil || c.dealias == nil {
++		return rawRef
++	}
++	return c.dealias.clean(rawRef)
++}
++
+ // RefSource names the far-end reference in use, for the stats report:
+ // "hw" once ch8 has proved itself the playback loopback, "sw" for the tap at
+ // the ALSA write, "off" while cancellation is disarmed.
+diff --git a/device/internal/client/control.go b/device/internal/client/control.go
+index 77ecd31..16fdf09 100644
+--- a/device/internal/client/control.go
++++ b/device/internal/client/control.go
+@@ -684,6 +684,10 @@ func (c *ControlClient) connect(ctx context.Context, server *discovery.ServerInf
+ 		// is published, so a caller reading it can never see a stale set
+ 		// from the previous connection.
+ 		c.setFeatures(first.Features)
++		// The controller asked for the two-channel uplink: it runs its own
++		// AEC and wants the de-aliased hardware reference instead of our
++		// cancellation. Feature-gated so an older controller is unaffected.
++		data.SetRefUplink(c.HasFeature("dot2_hw_ref"))
+ 		// ...and what time it is. Deliberately AFTER the connection exists,
+ 		// so nothing a connection depends on can depend on this: TLS keeps
+ 		// verifying against the build-time clamp, which is there precisely
+@@ -1296,7 +1300,7 @@ func capabilities() []string {
+ 		"oww_shadow", "oww_trigger", "button_hold", "audio_mix",
+ 		"aec_hw_ref", "oww_local_only", "output_chain", "wake_cue", "volume_cue", "remote_volume_arc",
+ 		"response_level", "wake_mic", "pairing",
+-		"wake_word_off", "sendspin", "ble_connect"}
++		"wake_word_off", "sendspin", "ble_connect", "ref_uplink"}
+ 	if als.Present() {
+ 		caps = append(caps, "ambient_light")
+ 	}
+diff --git a/device/internal/client/data.go b/device/internal/client/data.go
+index 6932618..d52f867 100644
+--- a/device/internal/client/data.go
++++ b/device/internal/client/data.go
+@@ -255,6 +255,10 @@ type DataClient struct {
+ 	// sent on oww_wake (wakelevel.go).
+ 	wakeLevels  levelRing
+ 	listenState atomic.Value // string
++	// refUplink ups the always-on stream to [beam mono | de-aliased ch8
++	// reference] for controllers that run their own AEC. Set from the ack's
++	// feature list; absent on every older controller, which keeps mono.
++	refUplink atomic.Bool
+ 	// onListenEnd reports a session the device closed on its own (deadline,
+ 	// mute, link). Set once at wiring time.
+ 	onListenEnd func(listen.End)
+@@ -689,6 +693,11 @@ func (d *DataClient) SendBleGatt(payload []byte) bool {
+ 	return true
+ }
+ 
++// SetRefUplink turns the two-channel uplink on or off (ack feature
++// "dot2_hw_ref"). Off is the default and the behaviour of every older
++// controller, so an upgrade never changes the wire for an old peer.
++func (d *DataClient) SetRefUplink(on bool) { d.refUplink.Store(on) }
++
+ func (d *DataClient) StartMic(lockMic bool) {
+ 	d.micMu.Lock()
+ 	defer d.micMu.Unlock()
+@@ -1061,6 +1070,10 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
+ 	active := false
+ 	everActive := false // true once active has been true at least once this turn
+ 	buf := make([]byte, 0, vadOwwChunkBytes*4)
++	// refBuf carries the same periods as buf when the controller asked for the
++	// two-channel uplink, so a reference can be interleaved into each 80 ms
++	// frame on the exact boundary its microphone samples ended on.
++	refBuf := make([]byte, 0, vadOwwChunkBytes*4)
+ 	// preroll ring — processed mono periods captured while the gate is
+ 	// closed, oldest first. Flushed into buf at gate open, cleared while
+ 	// active. Slices are retained (not copied): Process() returns a fresh
+@@ -1251,6 +1264,20 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
+ 			}
+ 			mono, angle := d.beam.Process(raw, beamAngle, extractGain)
+ 
++			// Optional far end for the controller (feature "dot2_hw_ref").
++			// Same period as the microphone it accompanies, so the two
++			// channels are frame-aligned by construction; independent of
++			// aecEnabled, because the controller cancels instead of us. A
++			// length disagreement is never guessed around: mono is sent.
++			var uplinkRef []byte
++			if d.refUplink.Load() {
++				if rawRef := d.beam.EchoRef(raw); rawRef != nil {
++					if cleanRef := d.aec.RefForUplink(rawRef); len(cleanRef) == len(mono) {
++						uplinkRef = cleanRef
++					}
++				}
++			}
++
+ 			// AEC — subtract the speaker's own output before anything
+ 			// measures or gates the signal. No-op while aecEnabled=false.
+ 			// (Has its own mutex — inside pipeMu only for lock ordering
+@@ -1383,6 +1410,11 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
+ 			// gate below now serves only bounded lockMic turns.
+ 			if !lockMic {
+ 				buf = append(buf, mono...)
++				if uplinkRef != nil {
++					refBuf = append(refBuf, uplinkRef...)
++				} else {
++					refBuf = refBuf[:0] // no reference this period: never leave stale bytes
++				}
+ 				state := d.ListenState()
+ 				for len(buf) >= vadOwwChunkBytes {
+ 					// One copy per frame, stamped once, shared by the scorer
+@@ -1392,6 +1424,20 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
+ 					chunk := make([]byte, vadOwwChunkBytes)
+ 					copy(chunk, buf[:vadOwwChunkBytes])
+ 					buf = buf[vadOwwChunkBytes:]
++					// wire is what leaves the device: the mono chunk, or mono
++					// interleaved with the same 80 ms of reference. Scoring and
++					// the listen gate keep using `chunk`, which stays mono.
++					wire := chunk
++					if d.refUplink.Load() && len(refBuf) >= vadOwwChunkBytes {
++						inter := make([]byte, vadOwwChunkBytes*2)
++						for i := 0; i < vadOwwChunkBytes; i += 2 {
++							j := i * 2
++							inter[j], inter[j+1] = chunk[i], chunk[i+1]
++							inter[j+2], inter[j+3] = refBuf[i], refBuf[i+1]
++						}
++						refBuf = refBuf[vadOwwChunkBytes:]
++						wire = inter
++					}
+ 					at := time.Now()
+ 					d.wakeLevels.push(at, vadPeriodRMS(chunk), gainLin)
+ 					// Score the SAME bytes on the SAME 80ms boundaries the
+@@ -1415,7 +1461,7 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
+ 						// Nothing leaves. The gate still tracks the floor.
+ 						d.listenGate.Push(chunk, at)
+ 					default:
+-						sendFrame(chunk)
++						sendFrame(wire)
+ 					}
+ 				}
+ 				continue
