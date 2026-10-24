@@ -58,3 +58,18 @@
 - [ ] `mic_start(lock_mic:false)` 与 `mic_start(lock_mic:true)` 在 rui 侧的取舍：连续流给 rui 自己做 KWS/VAD，还是用设备的 VAD 门控。
 - [ ] 单声道（设备侧 AEC 已处理）下播放中唤醒的误唤醒率——决定 Phase 3 是否必须上 9 声道。
 - [ ] 设备对 `ack.features` 的依赖：不宣告任何 feature 是否完全等同旧行为。
+
+
+## 2026-10-24 · 播放"卡"：EOS 空闲阈值太短导致中途换流
+
+**现象**：短回复说到一半出现"咔"（如回答"2"时）。设备日志显示同一条回复被拆成两段流
+（先 4 个 period ≈171 ms，再 21 个 period），第二段重新 prime。
+
+**根因**：`EOS_IDLE_S = 0.4`。TTS 音频是突发到达的，句内只要断供超过 0.4 s，adapter 就发
+`0x03` 结束流；下一块音频到来时设备重新开流并 prime（30–800 ms），听感即卡顿。
+
+**修复**：`EOS_IDLE_S = 1.2`（设备缓冲约 300 ms，1.2 s 静音仍能在饿死前收流）。验证：同一短
+回复现在是一段 61-period 流，`maxGap=101 ms`。
+
+**经验**：设备端 `underruns=0` 不能证明"听感连续"——跨流重启的 prime 不在 underrun 计数里，
+要看 `periods/recvSpan/maxGap` 与流的条数。
