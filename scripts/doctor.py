@@ -107,6 +107,29 @@ def check_config(path: Path) -> dict:
     return {"text": text}
 
 
+def check_plug() -> None:
+    """The manifest is the plug's declaration; a deployment must carry a valid one."""
+    path = Path(os.environ.get("DOT2_PLUG_FILE") or "plug.json")
+    if not path.is_file():
+        check(False, "plug manifest", str(path), f"missing: {path}")
+        return
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        check(False, "plug manifest", str(path), f"unreadable: {exc}")
+        return
+    check(True, "plug manifest", f"{path} ({data.get('plug')} v{data.get('version')})", "")
+    check(data.get("entrypoint") == "rui_dot2_bridge.adapter:build", "plug entrypoint",
+          "rui_dot2_bridge.adapter:build", f"unexpected: {data.get('entrypoint')!r}")
+    playback = data.get("audio", {}).get("playback", {})
+    capture = data.get("audio", {}).get("capture", {})
+    check(playback.get("rate") == 48000, "plug playback rate", "48000 Hz", f"{playback.get('rate')}")
+    check(capture.get("rate") == 16000, "plug capture rate", "16000 Hz", f"{capture.get('rate')}")
+    ceiling = data.get("volume", {}).get("ceiling_percent")
+    check(isinstance(ceiling, (int, float)) and 0 <= ceiling <= 100, "plug volume ceiling",
+          f"{ceiling}%", f"invalid ceiling: {ceiling!r}")
+
+
 def check_ports(host: str, port: int) -> None:
     busy = False
     with socket.socket() as sock:
@@ -162,6 +185,7 @@ def main() -> int:
     secret("XFYUN_API_KEY")  # no-op today, keeps the helper honest about env sourcing
     check_certs(Path(args.secrets))
     check_config(Path(args.config))
+    check_plug()
     check_ports(args.host, args.port)
     check_api(args.api)
     if args.device:

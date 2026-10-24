@@ -29,9 +29,10 @@ from house_ear.device.contract import (
     Transport,
 )
 
+from . import plug as plug_manifest
 from .control import start_control_server
 from .device_link import DeviceLink
-from .dsp import LoudnessProcessor, fade_out_pcm
+from .dsp import LoudnessConfig, LoudnessProcessor, fade_out_pcm
 from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE
 from .volume import DEVICE_LEVEL_MAX, VOLUME_CAP_PERCENT, clamp_percent
 
@@ -121,6 +122,10 @@ class Dot2Adapter(DeviceAdapter):
         inject_port: int | None = None,
         mic_channels: int = 1,
         ref_channels: int = 0,
+        prebuffer_ms: int | None = None,
+        prebuffer_start_ms: int | None = None,
+        eos_idle_ms: int | None = None,
+        loudness_defaults: dict | None = None,
     ) -> None:
         self.device_id = device_id
         self.host = host
@@ -157,8 +162,18 @@ class Dot2Adapter(DeviceAdapter):
         self._mic_gain_db = int(os.environ.get("DOT2_MIC_GAIN_DB", "18") or 18)
         # Debug: capture exactly what we hand to the device (DOT2_PLAYBACK_DUMP=dir).
         # Used to tell a gap in our processed PCM from a stream split on the wire.
-        self._prebuffer_ms = int(os.environ.get("DOT2_PREBUFFER_MS", str(int(PREBUFFER_S * 1000))) or 450)
+        self._prebuffer_ms = int(
+            os.environ.get("DOT2_PREBUFFER_MS")
+            or prebuffer_ms
+            or int(PREBUFFER_S * 1000)
+        )
         self._prebuffer_bytes = int(SPEAKER_RATE * self._prebuffer_ms / 1000) * 2
+        self._prebuffer_start_s = float(
+            os.environ.get("DOT2_PREBUFFER_START_MS") or prebuffer_start_ms or 350
+        ) / 1000.0
+        self._eos_idle_s = float(
+            os.environ.get("DOT2_EOS_IDLE_MS") or eos_idle_ms or int(EOS_IDLE_S * 1000)
+        ) / 1000.0
         self._stream_started = False
         self._prebuffer_task: asyncio.Task | None = None
         self._dump_dir = Path(os.environ.get("DOT2_PLAYBACK_DUMP") or "")
@@ -170,6 +185,10 @@ class Dot2Adapter(DeviceAdapter):
         self._loudness_file = Path(os.environ.get("DOT2_LOUDNESS_FILE") or "dev/rui/loudness.json")
         self._control_port = int(os.environ.get("DOT2_CONTROL_PORT", "0") or 0)
         config = LoudnessProcessor.load_config(self._loudness_file)
+        if loudness_defaults and not self._loudness_file.is_file():
+            # A fresh deployment inherits the curve declared by the plug manifest;
+            # a persisted file (operator/runtime edits) always wins over it.
+            config = LoudnessConfig.from_json({**config.to_json(), **loudness_defaults})
         env_mode = (os.environ.get("DOT2_LOUDNESS_MODE") or "").strip()
         if env_mode:
             config.mode = env_mode
@@ -390,7 +409,7 @@ class Dot2Adapter(DeviceAdapter):
     async def _start_after_prebuffer(self) -> None:
         """Short replies may never fill the prebuffer: start after a short wait."""
         try:
-            await asyncio.sleep(PREBUFFER_START_S)
+            await asyncio.sleep(self._prebuffer_start_s)
         except asyncio.CancelledError:
             return
         if self._stream_started or not self._frame_buffer:
@@ -426,13 +445,20 @@ class Dot2Adapter(DeviceAdapter):
 
     async def _eos_after_idle(self) -> None:
         try:
-            await asyncio.sleep(EOS_IDLE_S)
+            await asyncio.sleep(self._eos_idle_s)
         except asyncio.CancelledError:
             return
         if not self._playing or self._link is None:
             return
         self._playing = False
         self._stream_started = False
+        if len(self._frame_buffer) < int(SPEAKER_RATE * 2 * 0.005):
+            # A sub-5 ms remainder after the last whole period would open a 1-period
+            # stream at EOS (the "ghost" stream that pollutes primeWait/recvSpan).
+            # It is inaudible; drop it rather than play it late.
+            self._frame_buffer.clear()
+            await self._link.end_stream()
+            return
         if self._frame_buffer:
             # Fade the last ~10 ms of the partial tail, then pad with silence so the
             # device gets whole 42.7 ms periods. Holding the tail back (instead of
@@ -507,10 +533,26 @@ def build(dev, cfg) -> Dot2Adapter:  # noqa: ANN001 - rui's DeviceConfig/Config
     if token_env:
         token = os.environ.get(token_env) or None
     mute = os.environ.get("DOT2_MUTE", "").strip().lower() in ("1", "true", "yes", "on")
-    aec_env = os.environ.get("DOT2_AEC_ENABLED", "1").strip().lower()
+    # The plug manifest supplies deployment defaults; env wins over it, and rui's
+    # DeviceConfig wins over both for the fields rui owns (host, port, secrets).
+    manifest = plug_manifest.load()
+    aec_manifest = str(plug_manifest.get(manifest, "capabilities", "aec", default="device"))
+    aec_env = os.environ.get("DOT2_AEC_ENABLED", "1" if aec_manifest != "none" else "0").strip().lower()
     inject = os.environ.get("DOT2_INJECT_PORT", "").strip()
-    mic_channels = int(os.environ.get("DOT2_MIC_CHANNELS", "1") or 1)
-    ref_channels = int(os.environ.get("DOT2_REF_CHANNELS", "0") or 0)
+    mic_channels = int(
+        os.environ.get("DOT2_MIC_CHANNELS")
+        or plug_manifest.get(manifest, "audio", "capture", "mic_channels", default=1)
+    )
+    ref_channels = int(
+        os.environ.get("DOT2_REF_CHANNELS")
+        or plug_manifest.get(manifest, "audio", "capture", "ref_channels", default=0)
+    )
+    mic_gain_db = int(
+        os.environ.get("DOT2_MIC_GAIN_DB")
+        or plug_manifest.get(manifest, "audio", "capture", "mic_gain_db", default=18)
+    )
+    if os.environ.get("DOT2_MIC_GAIN_DB"):
+        os.environ.setdefault("DOT2_MIC_GAIN_DB", str(mic_gain_db))
     return Dot2Adapter(
         dev.id,
         host=dev.host,
@@ -520,15 +562,24 @@ def build(dev, cfg) -> Dot2Adapter:  # noqa: ANN001 - rui's DeviceConfig/Config
             or os.environ.get("DOT2_SECRETS_DIR")
             or "secrets"
         ),
-        tls_port=int(getattr(dev, "listen_port", None) or DEFAULT_TLS_PORT),
+        tls_port=int(
+            getattr(dev, "listen_port", None)
+            or plug_manifest.get(manifest, "transport", "port", default=DEFAULT_TLS_PORT)
+        ),
         token=token,
         # Mute = the ceiling itself becomes 0, so every path (connect, reconciler,
         # physical buttons) lands on level 0 and the device stays silent while
         # wake/ASR/barge keep working. Flip DOT2_MUTE off and restart to unmute.
         volume_cap_percent=0.0 if mute else float(
-            os.environ.get("DOT2_VOLUME_CAP", VOLUME_CAP_PERCENT)),
+            os.environ.get("DOT2_VOLUME_CAP")
+            or plug_manifest.get(manifest, "volume", "ceiling_percent", default=VOLUME_CAP_PERCENT)
+        ),
         aec_enabled=aec_env not in ("0", "false", "no", "off"),
         inject_port=int(inject) if inject else None,
         mic_channels=mic_channels,
         ref_channels=ref_channels,
+        prebuffer_ms=plug_manifest.get(manifest, "audio", "playback", "prebuffer_ms"),
+        prebuffer_start_ms=plug_manifest.get(manifest, "audio", "playback", "prebuffer_start_ms"),
+        eos_idle_ms=plug_manifest.get(manifest, "audio", "playback", "eos_idle_ms"),
+        loudness_defaults=manifest.get("loudness") if isinstance(manifest.get("loudness"), dict) else None,
     )

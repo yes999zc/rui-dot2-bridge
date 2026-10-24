@@ -1,0 +1,79 @@
+{
+  "plug": "dot2-echomuse",
+  "version": "1.0.0",
+  "requires_socket": ">=0.1",
+  "identity": {
+    "model": "Echo Dot 2 (RS03QR)",
+    "vendor": "Amazon",
+    "firmware": "EchoMuse v2.18.1",
+    "room": "客厅"
+  },
+  "transport": {
+    "direction": "inbound",
+    "scheme": "wss",
+    "port": 8870,
+    "auth": "X-EM-Token"
+  },
+  "audio": {
+    "capture": {
+      "rate": 16000,
+      "channel_count": 1,
+      "mic_channels": 1,
+      "ref_channels": 0,
+      "frame_ms": 80,
+      "format": "s16le",
+      "mic_gain_db": 18
+    },
+    "playback": {
+      "rate": 48000,
+      "channel_count": 1,
+      "format": "s16le",
+      "max_frame_bytes": 4096,
+      "prebuffer_ms": 450,
+      "prebuffer_start_ms": 350,
+      "eos_idle_ms": 1200
+    }
+  },
+  "volume": {
+    "scale_max": 127,
+    "law": "db_linear",
+    "db_per_step": 0.5,
+    "unity_at": 127,
+    "ceiling_percent": 100
+  },
+  "capabilities": {
+    "led": {"count": 12},
+    "keys": true,
+    "barge_in": "wake",
+    "aec": "device"
+  },
+  "loudness": {
+    "enabled": true,
+    "mode": "stock",
+    "curve_ladder": true,
+    "trim_db": -2.0,
+    "lowcut_hz": 250.0,
+    "lowcut_db": 6.0,
+    "highshelf_hz": 4000.0,
+    "highshelf_db": 2.0,
+    "limiter_ceiling_db": -1.0
+  },
+  "health": {
+    "fields": ["connected", "firmware", "rtt_ms", "dropped_audio", "volume_cap_percent", "loudness"]
+  },
+  "limits": {
+    "uplink_kbps": 32,
+    "notes": [
+      "mono/no-reference => rui AEC and echo-based barge-in off; wake still interrupts playback",
+      "firmware v2.18.1 has no per-block play-head; played_ms reporting needs newer firmware"
+    ]
+  },
+  "control": {
+    "loudness": {
+      "bind": "127.0.0.1",
+      "port": 8872,
+      "routes": ["GET /loudness", "PUT /loudness", "GET /health"]
+    }
+  },
+  "entrypoint": "rui_dot2_bridge.adapter:build"
+}

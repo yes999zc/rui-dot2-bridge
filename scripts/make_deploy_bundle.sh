@@ -18,6 +18,7 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$OUT" "$WORK/$NAME"
 cp -R "$ROOT/src" "$ROOT/deploy" "$ROOT/patches" "$ROOT/scripts" "$ROOT/tools" "$ROOT/tests" \
       "$ROOT/pyproject.toml" "$ROOT/README.md" "$ROOT/ROADMAP.md" "$ROOT/CHANGELOG.md" \
+      "$ROOT/plug.json" \
       "$WORK/$NAME/" 2>/dev/null || true
 # Vendor EQ curves: not in git (artifacts/), but the deployment needs them.
 if compgen -G "$ROOT/artifacts/eq-prototype/EQ_*.cfg" >/dev/null; then
