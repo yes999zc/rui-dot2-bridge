@@ -33,9 +33,9 @@ from websockets.exceptions import ConnectionClosed
 
 from .frames import (
     FRAME_MIC,
-    mic_control,
     FRAME_NO_SPEECH_TIMEOUT,
     FRAME_VAD_END,
+    mic_control,
     speaker_eos,
     split_playback,
 )
@@ -92,6 +92,11 @@ class DeviceLink:
         aec_enabled: bool = True,
         ref_uplink: bool = False,
         mic_gain_db: int | None = None,
+        aec_tail_ms: int | None = None,
+        aec_delay_ms: int | None = None,
+        agc_enabled: bool | None = None,
+        barge_in_enabled: bool | None = None,
+        barge_in_threshold: int | None = None,
         oww_on_device: str = "off",
         on_button: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
@@ -113,6 +118,13 @@ class DeviceLink:
         # to +24 dB, which clips the Dot 2's mics on normal speech (peak 1.0000);
         # the controller can lower it in the config push.
         self.mic_gain_db = mic_gain_db
+        # Optional device-side DSP overrides. EchoMuse accepts all of these in the
+        # config push; leaving one None keeps the firmware default.
+        self.aec_tail_ms = aec_tail_ms
+        self.aec_delay_ms = aec_delay_ms
+        self.agc_enabled = agc_enabled
+        self.barge_in_enabled = barge_in_enabled
+        self.barge_in_threshold = barge_in_threshold
         self.oww_on_device = oww_on_device
         self.on_button = on_button
 
@@ -290,6 +302,13 @@ class DeviceLink:
                     "wakeWordEnabled": False,
                     "aecEnabled": self.aec_enabled,
                     **({"micGainDb": self.mic_gain_db} if self.mic_gain_db is not None else {}),
+                    **({"aecTailMs": self.aec_tail_ms} if self.aec_tail_ms is not None else {}),
+                    **({"aecDelayMs": self.aec_delay_ms} if self.aec_delay_ms is not None else {}),
+                    **({"agcEnabled": self.agc_enabled} if self.agc_enabled is not None else {}),
+                    **({"bargeInEnabled": self.barge_in_enabled}
+                       if self.barge_in_enabled is not None else {}),
+                    **({"bargeInThreshold": self.barge_in_threshold}
+                       if self.barge_in_threshold is not None else {}),
                 }
             )
         await self._send_control({"type": "mic_start", "lock_mic": False})
