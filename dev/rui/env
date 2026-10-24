@@ -102,7 +102,7 @@ fi
 
 # --- volume ceiling (percent of the device's own 0-127 scale) ---------------
 # The scale is dB-linear (0.5 dB/step, 127 = 0 dB), so 30 % is -44.5 dB and
-# effectively inaudible. 70 % = level 89 = -19 dB (normal indoor); 90 % = level 114
-# = -6.5 dB (loud but not unity).
+# effectively inaudible. 70 % = level 89 = -19 dB; 90 % = -6.5 dB; 100 % = level 127 = unity
+# (the firmware's own maximum — above 127 the DAC saturated, see EchoMuse docs).
 # 9哥 can raise/lower this line; the adapter enforces it everywhere.
-export DOT2_VOLUME_CAP="${DOT2_VOLUME_CAP:-90}"
+export DOT2_VOLUME_CAP="${DOT2_VOLUME_CAP:-100}"
