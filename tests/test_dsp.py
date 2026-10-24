@@ -163,7 +163,7 @@ class ProcessorTest(unittest.TestCase):
         self.assertLess(high_gain, -1.0)
 
     def test_missing_curves_fall_back_to_flat(self) -> None:
-        proc = LoudnessProcessor(LoudnessConfig(mode="stock", lowcut_db=0.0, highshelf_db=0.0),
+        proc = LoudnessProcessor(LoudnessConfig(mode="stock", lowcut_db=0.0, highshelf_db=0.0, trim_db=0.0),
                                  Path(self.dir) / "nope")
         x = tone(0.05, amp=0.1)
         out = np.frombuffer(proc.process_bytes(pcm(x)), dtype="<i2") / 32768.0
