@@ -106,3 +106,10 @@ fi
 # (the firmware's own maximum — above 127 the DAC saturated, see EchoMuse docs).
 # 9哥 can raise/lower this line; the adapter enforces it everywhere.
 export DOT2_VOLUME_CAP="${DOT2_VOLUME_CAP:-100}"
+
+# --- loudness (stock EQ ladder + limiter) -----------------------------------
+# EQ_50..EQ_100.cfg were pulled read-only from the device into this dir; they
+# are vendor files and stay out of git (artifacts/ is ignored).
+export DOT2_EQ_DIR="${DOT2_EQ_DIR:-$ROOT/artifacts/eq-prototype}"
+export DOT2_LOUDNESS_FILE="${DOT2_LOUDNESS_FILE:-$ROOT/dev/rui/loudness.json}"
+export DOT2_CONTROL_PORT="${DOT2_CONTROL_PORT:-8872}"
