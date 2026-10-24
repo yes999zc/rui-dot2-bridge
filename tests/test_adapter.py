@@ -124,6 +124,7 @@ class PlaybackTest(unittest.IsolatedAsyncioTestCase):
         self.link: FakeLink = self.adapter._link  # type: ignore[assignment]
 
     async def test_play_sends_whole_periods_only(self) -> None:
+        self.adapter._prebuffer_bytes = 0  # send immediately for this framing test
         await self.adapter.play(bytes(5000), sample_rate=48000, channels=1)
         self.assertEqual([len(b) for b in self.link.sent], [SPEAKER_CHUNK_BYTES])
         await self.adapter.play(bytes(4000), sample_rate=48000, channels=1)
@@ -143,13 +144,20 @@ class PlaybackTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.link.sent[-1]), SPEAKER_CHUNK_BYTES)  # tail padded
         self.assertEqual(self.link.sent[-1][-2:], b"\x00\x00")  # faded to silence
 
-    async def test_stop_playback_when_idle_sends_nothing(self) -> None:
-        # rui calls stop_playback before every reply; a flush here would race the
-        # first PCM blocks on the other socket and cost ~400 ms of re-prime.
+    async def test_stop_playback_when_idle_still_flushes(self) -> None:
+        # The flush must go out even when idle: it opens the device's 1.024 s prime
+        # bypass. DeviceLink.flush() adds the pong barrier that orders it before
+        # the first PCM block (the old 406 ms hole).
         await self.adapter.stop_playback()
-        self.assertEqual(self.link.flushed, 0)
+        self.assertEqual(self.link.flushed, 1)
         self.assertEqual(self.link.eos, 0)
         self.assertEqual(len(self.link.sent), 0)
+
+    async def test_prebuffer_holds_audio_until_enough_arrives(self) -> None:
+        await self.adapter.play(bytes(9600), sample_rate=48000, channels=1)
+        self.assertEqual(self.link.sent, [])  # 100 ms < 450 ms lead
+        await self.adapter.play(bytes(SPEAKER_CHUNK_BYTES * 12), sample_rate=48000, channels=1)
+        self.assertTrue(self.link.sent)  # crossed the threshold and started
 
     async def test_stop_playback_flushes_and_drops_buffer(self) -> None:
         await self.adapter.play(bytes(5000), sample_rate=48000, channels=1)

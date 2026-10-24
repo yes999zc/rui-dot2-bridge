@@ -98,7 +98,7 @@ PREBUFFER_S = 0.45
 PREBUFFER_BYTES = int(SPEAKER_RATE * PREBUFFER_S) * 2
 PREBUFFER_START_S = 0.35   # a short reply may never reach the threshold: start anyway
 
-EOS_IDLE_S = 0.7
+EOS_IDLE_S = 1.2
 PLAY_CHUNK_MS = 20        # re-chunk the device's 80 ms blocks for the plane
 
 
@@ -157,7 +157,8 @@ class Dot2Adapter(DeviceAdapter):
         self._mic_gain_db = int(os.environ.get("DOT2_MIC_GAIN_DB", "18") or 18)
         # Debug: capture exactly what we hand to the device (DOT2_PLAYBACK_DUMP=dir).
         # Used to tell a gap in our processed PCM from a stream split on the wire.
-        self._prebuffer = int(os.environ.get("DOT2_PREBUFFER_MS", str(int(PREBUFFER_S * 1000))) or 450)
+        self._prebuffer_ms = int(os.environ.get("DOT2_PREBUFFER_MS", str(int(PREBUFFER_S * 1000))) or 450)
+        self._prebuffer_bytes = int(SPEAKER_RATE * self._prebuffer_ms / 1000) * 2
         self._stream_started = False
         self._prebuffer_task: asyncio.Task | None = None
         self._dump_dir = Path(os.environ.get("DOT2_PLAYBACK_DUMP") or "")
@@ -373,7 +374,7 @@ class Dot2Adapter(DeviceAdapter):
                 self._flush_dump()
         self._frame_buffer.extend(pcm)
         if not self._stream_started:
-            if len(self._frame_buffer) >= self._prebuffer * 2:
+            if len(self._frame_buffer) >= self._prebuffer_bytes:
                 self._stream_started = True
             else:
                 if self._prebuffer_task is None or self._prebuffer_task.done():
@@ -449,20 +450,13 @@ class Dot2Adapter(DeviceAdapter):
     async def stop_playback(self, fade_ms: int = 120) -> None:
         """The device drops everything it has buffered: barge-in stops the sound now.
 
-        rui calls this before the first chunk of *every* reply (process.py:1108),
-        even when nothing is playing. The flush goes out on the control socket
-        while PCM goes out on the data socket, and the device orders the two only
-        by arrival: it accepted the first two blocks, then hit the flush, dropped
-        them and closed the stream, forcing a re-prime - measured as a 406 ms hole
-        at the start of 11/11 replies (2026-10-24). When idle there is nothing to
-        flush, so do not send it.
+        rui calls this before the first chunk of *every* reply (process.py:1108).
+        The flush must be sent - it is what opens the device's 1.024 s prime
+        bypass - but it travels on /control while PCM travels on /data, so
+        DeviceLink.flush() waits for a pong on /control before returning. Without
+        that barrier the device accepted the first two blocks and then discarded
+        them on the late flush: 406 ms hole at the start of 11/11 replies.
         """
-        idle = not self._playing and not self._frame_buffer
-        if idle:
-            if self._eos_task is not None:
-                self._eos_task.cancel()
-                self._eos_task = None
-            return
         if self._eos_task is not None:
             self._eos_task.cancel()
             self._eos_task = None
