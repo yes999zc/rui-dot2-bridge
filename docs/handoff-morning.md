@@ -9,7 +9,7 @@
 |---|---|
 | rui（本机 dev 实例） | `:8091`，`audio_plane=true`、`speaker_connected=true`，用 `dev/rui/config.yaml` |
 | adapter | 在 rui 音频面子进程里，监听 `wss 8870`；设备已连上（`v2.18.1`，`192.168.5.69`） |
-| 设备音量 | **38/127 = 30%**（`/api/v1/device/volume` 显示 `76/255`），配置已持久化到设备（`/tmp/em-config.json` 的 `received.startupVolume=38`） |
+| 设备音量 | 上限由 `dev/rui/env` 的 `DOT2_VOLUME_CAP` 决定（2026-10-24 早上已从 30% 调到 **90%** = level 114 = −6.5 dB，`/api/v1/device/volume` 显示 229/255）；30% 在 dB 刻度上只有 −44.5 dB，几乎听不见 |
 | 设备 AEC | **开**（`[aec] enabled: frame=512 tail=64ms`，7 麦回声路径已加载） |
 | 旧 EchoMuse controller | **已停**（见 §4 的原因），容器还在，随时可起 |
 | 8 小时 soak | 在跑，每分钟一行：`dev/rui/soak.jsonl`；汇总会写 `dev/rui/soak-summary.md` |

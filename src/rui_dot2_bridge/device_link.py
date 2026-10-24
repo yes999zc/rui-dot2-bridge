@@ -98,7 +98,7 @@ class DeviceLink:
         self.plain_port = plain_port
         self.bind_host = bind_host
         self.device_id = device_id
-        self.volume_cap_percent = clamp_percent(volume_cap_percent)
+        self.volume_cap_percent = max(0.0, min(float(volume_cap_percent), 100.0))
         self.push_config = push_config
         self.aec_enabled = aec_enabled
         self.oww_on_device = oww_on_device
@@ -116,7 +116,12 @@ class DeviceLink:
         self._ping_task: asyncio.Task[None] | None = None
         self._ping_seq = 0
         self._pong_waiters: dict[int, float] = {}
+        # Target level (ours), not "whatever the device last reported". The two were
+        # one variable, and a stale volume_state from before the connect push (the
+        # device reports its old 38 after we send 89) overwrote the target and then
+        # "pulled back" to it - the morning "speaker is very quiet" bug.
         self._volume_level = capped_level(100.0, self.volume_cap_percent)
+        self._reported_level: int | None = None
         self._device_log: deque[str] = deque(maxlen=200)
         self._closing = False
         self.bound_ports: dict[str, int] = {}
@@ -302,12 +307,13 @@ class DeviceLink:
             self._on_pong(message)
         elif kind == "volume_state":
             level = int(message.get("level") or 0)
+            self._reported_level = level
             if level > self._volume_level:
-                # The owner's ceiling wins over the physical buttons.
+                # The ceiling wins over the physical buttons. A report BELOW the
+                # target is the device confirming an older value; it must never
+                # lower the target, only be recorded.
                 log.info("dot2 link: volume %d above ceiling, pulling back to %d", level, self._volume_level)
                 await self.set_volume_level(self._volume_level)
-            else:
-                self._volume_level = level
         elif kind == "button":
             log.info("dot2 link: button %s", message)
             if self.on_button is not None:
@@ -436,6 +442,11 @@ class DeviceLink:
     @property
     def volume_level(self) -> int:
         return self._volume_level
+
+    @property
+    def reported_level(self) -> int | None:
+        """The device's own last report (may lag the target by one message)."""
+        return self._reported_level
 
     async def set_leds(self, leds: list[dict[str, Any]], listening: bool = False) -> None:
         await self._send_control({"type": "leds", "leds": leds, "listening": listening})

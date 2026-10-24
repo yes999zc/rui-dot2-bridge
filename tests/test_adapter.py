@@ -213,6 +213,20 @@ class Volume255Test(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await adapter.read_volume(), round(30 * 255 / 100))
 
 
+class CeilingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_ceiling_is_not_reclamped_to_the_default(self) -> None:
+        adapter = make_adapter(volume_cap_percent=70)
+        self.assertEqual(adapter.volume_cap_percent, 70.0)
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        await adapter.set_volume(100)
+        self.assertEqual(link.volumes[-1], 70.0)  # capped at 70, not at 30
+
+    async def test_seventy_percent_maps_to_level_89(self) -> None:
+        from rui_dot2_bridge.volume import percent_to_level
+
+        self.assertEqual(percent_to_level(70), 89)
+
+
 class VolumeMappingTest(unittest.TestCase):
     def test_cap(self) -> None:
         self.assertEqual(capped_level(100), 38)

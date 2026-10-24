@@ -130,6 +130,20 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(message["type"], "volume_set")
             self.assertEqual(message["level"], capped_level(30.0))
 
+    async def test_stale_low_report_does_not_lower_the_target(self) -> None:
+        async with self._control() as ctl:
+            for _ in range(4):
+                await asyncio.wait_for(ctl.recv(), 2)
+            # The device reports its pre-push 38 after we already sent our target.
+            await ctl.send(json.dumps({"type": "volume_state", "level": 38}))
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(ctl.recv(), 0.4)
+            # A later report above the ceiling still gets corrected.
+            await ctl.send(json.dumps({"type": "volume_state", "level": 127}))
+            message = json.loads(await asyncio.wait_for(ctl.recv(), 2))
+            self.assertEqual(message["type"], "volume_set")
+            self.assertEqual(message["level"], capped_level(30.0))
+
     async def test_volume_below_cap_is_accepted(self) -> None:
         async with self._control() as ctl:
             for _ in range(4):
