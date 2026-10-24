@@ -58,10 +58,34 @@ curl -s http://192.168.5.34:8095/health   # 走 127.0.0.1 或带 X-Auth-Token
    关键词文件指向 `~/rui-test/keywords.txt`。
 5. **模型**：Mac → 服务器 rsync（LAN，1.1 GB 约十几秒到一分钟）。
 
-## 尚未做的（等 9 哥决定）
+## Dot 已切换（2026-10-24 19:05）
 
-- **没有把 Dot 切到这台服务器**：Dot 的 `controller.json` 仍指向 Mac（`192.168.5.18:8870`），
-  所以这台实例的 8870 目前只是 standby。要切的话把 `endpoints[0]` 改为
-  `192.168.5.34:8870` 并保留 Mac 作为 fallback，然后重启 Dot 上的 EchoMuse（或等它重连）。
-- 没有动 `.168` NAS（生产 rui 与小爱）。
-- 没有改 Mac dev 实例（仍静音运行）。
+`/data/local/etc/echomuse/controller.json` 现在：
+
+```json
+{"endpoints":[
+  {"host":"192.168.5.34","port":8867,"tls_port":8870},
+  {"host":"192.168.5.18","port":8867,"tls_port":8870},
+  {"host":"192.168.5.18","port":8767,"tls_port":8770}
+],"mdns":false}
+```
+
+- `endpoints[0]` = 荣耀服务器 `.34`；`[1]` = Mac dev 实例（fallback）；`[2]` = 旧 controller。
+- **备份**：`/data/local/etc/echomuse/controller.json.bak-20261024-1904`（切回时 `cp` 回去再重启 server）。
+- 切换方法（设备 shell 的重定向不可靠，必须 `push` + `su cp`）：
+
+```bash
+printf '%s' '<json>' > /tmp/controller.json
+adb push /tmp/controller.json /data/local/tmp/controller.json
+adb shell "su -c 'cp /data/local/tmp/controller.json /data/local/etc/echomuse/controller.json; chmod 644 /data/local/etc/echomuse/controller.json'"
+adb shell "su -c 'kill -9 <server pid>'"   # start_server.sh 会自动拉起并重读配置
+```
+
+- 验证：设备日志 `Registered as G090LF0964340RN6`；`.34 /health` `speaker_connected=true`；
+  Mac 实例 `speaker_connected=false`（它仍在跑、静音，作为 fallback）。
+- 回归测试：`POST /api/v1/debug/say` 经 `.34` 播出（设备 `periods=152`），回复正常。
+
+## 回滚
+
+把备份 `cp` 回 `controller.json`，重启设备 server（kill 后 start_server.sh 自动拉起）；
+Dot 会回到 Mac 实例。`.168` NAS 从头到尾没有参与。
