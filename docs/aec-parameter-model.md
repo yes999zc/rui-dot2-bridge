@@ -13,8 +13,8 @@
 2. **封闭类默认**：`who=device`、`reference.source=none`、controller AEC 关闭、barge 只保留 wake 模式。
 3. **开放类默认**：`who=controller`、`reference.source=device_loopback`、`same_frame=true`、`dealiased=true`、`alignment=frame_aligned`、controller AEC 开启。
 4. **选择依据不是品牌**，而是 manifest 的 `openness` + `Capability.REFERENCE` + `DeviceInfo.ref_channels` + 固件 feature（`ref_uplink` / `dot2_hw_ref`）+ `device.bypassable/controllable`。
-5. **rui 现在只有全局 `audio.aec`，无法表达“一台设备 controller、另一台 device”。** 最小新增是 `devices[].aec`（每设备覆盖）+ `DeviceInfo.features`（能力门控）+ 观测字段；这是本报告对 rui 的 P0 需求。
-6. **`both`（级联）默认关闭。** AGC 会让回声路径非线性，级联只在测量/调参时开；设备侧 ERLE 预算 ≤15 dB，总目标 ≥30 dB。`who=controller` 时设备 AEC 必须能关；关不掉就只能 `both` 或 `device`。
+5. **rui 现在只有全局 `audio.aec`，只能靠 `ref_channels` 隐式分流，无法表达“一台设备 controller、另一台 device”，也无法表达“有 ref 但仍让 device 消”。** 最小新增是 `devices[].aec`（每设备覆盖）+ `DeviceInfo.features`（能力门控）+ 观测字段；这是本报告对 rui 的 P0 需求。
+6. **`both`（级联）默认关闭。** AGC 会让回声路径非线性，级联只在测量/调参时开；设备侧 ERLE 预算 ≤15 dB，总目标 ≥30 dB。`who=controller` 时设备 AEC 必须能关；关不掉就只能 `both`（还需 `cascade_allowed`）或 `device`。
 
 ---
 
@@ -34,7 +34,7 @@
 | `reference.source` | `none`（或 `vendor_tap`） | `device_loopback`（ch8） | 厂商回采见 §4.2 |
 | `reference.channels` | `0`（或 `2`，厂商回采） | `1` | LX06 的 ch6/ch7 同源，rui 只取第一路 |
 | `reference.same_frame` | `false` | `true` | 与 mic 同一 TDM/交织帧 |
-| `reference.fixed_delay_ms` | `null` | `0` | 同帧 + dealias 锁定；LX06 实测 2.4 ms lead |
+| `reference.fixed_delay_ms` | `null` | `0` | 开放类同帧 + dealias 锁定；LX06 厂商回采实测 2.4 ms（§10.3） |
 | `reference.dealiased` | `false` | `true` | raw ch8 只有 ~1 dB；去混叠后 ~25.7 dB |
 | `reference.alignment` | `unknown` | `frame_aligned` | rui 不支持 `search`，见 §5 |
 | `reference.rate/format` | 随厂商 | `16000` / `s16le` | 与 `voice.rate` 一致最省事 |
@@ -52,15 +52,15 @@
 | `device.tail_ms` | `300`（厂商值） | `64` | hw ref 时设备固定 64 ms，`aecTailMs` 不生效 |
 | `device.delay_ms` | `0` | `0` | hw ref 时 `aecDelayMs` 不生效 |
 | `device.ref_source` | `auto` | `hw` | `auto` 会探测；接管时建议钉 `hw` |
-| `device.agc` | `true`（厂商） | `false` | controller AEC 需要线性回声路径 |
-| `device.barge_in` / 阈值 | `true` / `0.05` | `false` / `0.05` | 设备 OWW 的 barge；rui KWS 接管时无关 |
-| 可控性 | 通常 `controllable=false` | `controllable=true`，可推 6 个参数 | 见 §6 |
+| `device.agc` | `null`（厂商内部，不可观测） | `false` | controller AEC 需要线性回声路径 |
+| `device.barge_in` / 阈值 | `null`（厂商内部） / `0.05` | `false` / `0.05` | 设备 OWW 的 barge；rui KWS 接管时无关 |
+| 可控性 | 通常 `controllable=false` | `controllable=true`，设备接受 8 个（适配器现推 7 个） | 见 §6 |
 | **约束** | | | |
 | `constraints.mutual_exclusion` | `true` | `true` | 同一时刻只允许一个“主消” |
 | `constraints.cascade_allowed` | `false` | `false`（默认） | 只有测量/调参才开 |
 | `constraints.ref_required_for` | `[acoustic_barge]` | `[controller, acoustic_barge]` | wake barge 不需要参考 |
 | `constraints.fallback` | `[device, none]` | `[controller, device, none]` | 降级链见 §11 |
-| 迁移期（无 `audio.aec` 块） | 旧规则：有 ref → controller | 旧规则：有 ref → controller | **不能默认回退**，见 §8.3 |
+| 迁移期（无 `audio.aec` 块） | 旧规则：有 ref → controller（仅迁移期） | 旧规则：有 ref → controller（仅迁移期） | **不能默认回退**，见 §8.3 |
 | **rui 派生** | | | |
 | `audio.aec.enabled` | `false` | `true` | 全局 kill switch + 每设备 `who` 门控 |
 | `audio.aec.filter_len` | `4096`（不生效） | `2048` / `4096` | 见 §8.2 |
@@ -73,6 +73,8 @@
 | 自听 turn | ≤2 / 50 | ≤1 / 50（gate 0/20） | 见 §12.1 |
 | wake barge | 20/20 | ≥18/20 | 播放中喊唤醒词 |
 | 打断静音 P50 | ≤600 ms | ≤600 ms | 服务端 ≤300 ms + 设备缓冲 ~300 ms |
+
+附注：LX06 现网（open-xiaoai 8ch）不是 `reference.source=none`，而是 `vendor_tap`（ch6/ch7）；本表“封闭类”列给的是“厂商只给处理后单声道”的最小形态，8ch 变体见 §10.3。`null` 在设备侧表示“厂商内部、不可观测/不可控”，不是“关闭”。
 
 ---
 
@@ -261,29 +263,38 @@ L2 规则：
 
 结论：`cascade_allowed=false` 是默认；打开它需要显式理由（测量、对比、厂商 AEC 不可关但参考可用），并写入审计。
 
+一个必须说清的缺口：**设备侧没有“ERLE 目标”参数**（`aec.go` 只有 `tailMs`/`delayMs`/开关），所以 `cascade_device_erle_db=15` 目前只能通过“减小 tail”或“只开设备 AEC 的一小段”间接逼近，不能精确设定。若设备实际 ERLE 已经 20 dB 且无法调低，`both` 只应作为测量态，不应作为产品默认；此时诚实的选择是 `device`（承认厂商 AEC 已经够用）或 `controller`（如果能旁路设备 AEC）。
+
 ### 3.4 自动选择算法（`who=auto`）
 
 ```
 输入：manifest（openness/reference/device/controller）、probe 的 DeviceInfo、firmware features
 输出：who + 理由
 
+allowed(x) = x in manifest.who_allowed
+
 1. 若 manifest.who != auto：直接用它（但仍要过 §3.2 校验）。
 2. 若 openness == closed：
-       device.present ? device : none
+       allowed("device") && device.present ? device : none
 3. 若 openness == semi：
-       device.present ? device : (reference.available ? controller : none)
+       allowed("device") && device.present
+           ? device
+           : (allowed("controller") && reference.available ? controller : none)
        # 厂商回采默认只做“可选辅助”，不自动接管
 4. 若 openness == open：
        ref_ok = reference.available
+                && Capability.REFERENCE in info.capabilities
                 && DeviceInfo.ref_channels > 0
                 && reference.dealiased
                 && reference.alignment != search
                 && feature_ok(reference.requires_feature)
-       if ref_ok && controller.allowed && device.bypassable:
+       if ref_ok && allowed("controller") && controller.allowed && device.bypassable:
             controller
-       elif device.present:
+       elif ref_ok && allowed("both") && controller.allowed && constraints.cascade_allowed:
+            both                # 只有 L0 明确允许级联才会走到这里
+       elif allowed("device") && device.present:
             device
-       elif ref_ok:
+       elif ref_ok && allowed("controller"):
             controller          # 参考不可信时也聊胜于无，但 erle_target 降级
        else:
             none
@@ -292,6 +303,7 @@ L2 规则：
 `feature_ok` 的来源：
 
 - 适配器 `probe()` 的 `DeviceInfo.features`（P0 新增，见 §9）；Dot2 是 `ref_uplink`，控制器侧宣告 `dot2_hw_ref`；
+- `Capability.REFERENCE` 是粗粒度摘要，`DeviceInfo.ref_channels > 0` 才是可用的参考；两者不一致时以 `ref_channels` 为准并告警；
 - `DeviceInfo.ref_channels` 与 `AudioFrame.reference_channels` 必须一致；不一致以帧为准并告警；
 - `DeviceClass`（A/B）只用于安装/权限提示，**不作为 AEC 选择依据**；一个 B 类设备完全可能 `openness=closed`（能 root，但厂商 DSP 不可旁路）。
 
@@ -380,9 +392,9 @@ L2 规则：
 | `device.tail_ms` | `aecTailMs` | `300` | 50..500 | `hw` 参考下不生效（固定 64 ms）；`0` 无法表达（`>0` 才应用） |
 | `device.delay_ms` | `aecDelayMs` | `0` | 0..1000 | `hw` 参考下不生效；指针类型，0 可表达 |
 | `device.ref_source` | `aecRefSource` | `auto` | `auto` / `hw` / `sw` | 接管时钉 `hw`；AEC 关时设备上报 `off`（`RefSource()`），不能靠它判断参考来源 |
-| `device.agc` | `agcEnabled` | `true` | bool | 只作用于 bounded `lockMic`；wake 流强制关；controller AEC 时建议 `false` |
-| `device.barge_in` | `bargeInEnabled` | `true` | bool | 设备 OWW 的 barge；rui KWS 接管时可关 |
-| `device.barge_in_threshold` | `bargeInThreshold` | `0.05` | >0 | 同上；`owwOnDevice=off` 时无关 |
+| `device.agc` | `agcEnabled` | `true` | bool/null | 只作用于 bounded `lockMic`；wake 流强制关；controller AEC 时建议 `false`；`null` = 厂商内部不可观测 |
+| `device.barge_in` | `bargeInEnabled` | `false` | bool/null | 设备 OWW 的 barge；rui KWS 接管时可关；`null` = 厂商内部不可观测 |
+| `device.barge_in_threshold` | `bargeInThreshold` | `0.05` | >0 / null | 同上；`owwOnDevice=off` 时无关 |
 | `device.mic_gain_db` | `micGainDb` | `24`（设备默认） | 0..42 | 我们推 18，避免削波；量化余量见 §13 |
 | `device.frame_ms` | — | `32` | 固定 512 样本 | 设备 AEC 的周期，不可配 |
 | `device.params` | — | — | 可推字段列表 | 不含 `frame_ms` |
@@ -405,7 +417,7 @@ L2 规则：
 }
 ```
 
-现状：Dot2 适配器只推了 `aecEnabled` 和 `micGainDb`（`device_link.py:285-295`）；其余字段设备已经支持（`config.go:335-346`），但适配器还没接。这是插头侧的 TODO，不影响本模型的合法性。
+现状（2026-10-24 19:34，提交 `2bcda35`）：适配器已经能通过 `DOT2_AEC_TAIL_MS` / `DOT2_AEC_DELAY_MS` / `DOT2_AGC_ENABLED` / `DOT2_BARGE_IN_ENABLED` / `DOT2_BARGE_IN_THRESHOLD` 把上述字段推给设备（`adapter.py:144-170`、`device_link.py:302-311`）；`aecRefSource` 还没推（7/8），且**仍走环境变量，不是 manifest / rui API**。模型落地时应把这些 env 换成 `aec.device.*` 的正式来源，并让 rui 的 `devices[].aec` 能覆盖它们。设备侧已经支持这些字段（`config.go:281-346`），所以这是“来源改造”，不是“协议缺失”。
 
 ---
 
@@ -421,7 +433,7 @@ L2 规则：
 | device AEC | 开（厂商） | 开（厂商） | 关（旁路） |
 | `device.bypassable` | 通常 false | 看厂商 | true |
 | `device.controllable` | 通常 false | 看 client | true |
-| `barge_in.mode` | `wake` | `wake`（有可信参考时可 `both`） | `wake`（acoustic 待 rui 实现） |
+| `barge_in.mode` | `wake` | `wake`；只有显式 `who=controller` 且参考可信时才可 `both` | `wake`（acoustic 待 rui 实现） |
 | `fallback` | `[device, none]` | `[device, controller, none]` | `[controller, device, none]` |
 | ERLE 目标 | 不可见 | controller 级 ≥20 | controller 级 ≥20 |
 
@@ -443,7 +455,7 @@ L2 规则：
 
 | rui 字段 | 现值/默认 | 由什么派生 | 公式/注意 |
 |---|---|---|---|
-| `audio.aec.enabled` | `true` | `effective.who ∈ {controller, both}` ∧ `controller.enabled` ∧ `ref.available` | 旧行为只按 `ref_channels<1` 关（`process.py:404-410`）；新行为必须再加 `who` 门控 |
+| `audio.aec.enabled` | `true` | `effective.who ∈ {controller, both}` ∧ `controller.enabled` ∧ `ref.available` | 旧行为在全局开关打开后只按 `ref_channels<1` 关（`process.py:404-410`）；新行为必须再加 `who` 门控 |
 | `audio.aec.filter_len` | `4096` | `controller.filter_len` 或 auto | 见 §8.2；clamp 256..16384 |
 | `audio.aec.cancel` | `mix` | `controller.cancel` | `per_channel` 仅 `mic_channels>1`；单麦时 `mix` 就是一个滤波器 |
 | `audio.capture.rate` | `48000` | manifest `capture.rate` | 平面不以它为准（`process.py:4-8`），doctor 用 |
@@ -455,7 +467,7 @@ L2 规则：
 | `audio.voice.barge_in` | `true` | `barge_in.mode != none` | wake 模式也应为 true |
 | `audio.playback.target_silence_ms` | `300` | `barge_in.max_stop_ms` − 设备缓冲 | 设备 ALSA ~300 ms 另计，别把它算进服务端 |
 | `devices[].aec` | 无 | L1 每设备覆盖 | **新增**；没有它就无法混合编队 |
-| adapter `config` 推送 | `aecEnabled`/`micGainDb` | `aec.device.*` | 还需补 tail/delay/ref/agc/barge |
+| adapter `config` 推送 | `aecEnabled`/`micGainDb` + tail/delay/agc/barge（env） | `aec.device.*` | 已能推（`2bcda35`），但来源是 env；需改为 manifest/`devices[].aec` |
 | `Metrics.aec_enabled` | `self.aec is not None` | 派生 | 建议改成 `effective.who` + `state` |
 | `Metrics.aec_erle_db` | `AecChain.erle_db` | 派生 | 只在 `ref_active` 时有值（`aec.py:311-314`），且是 controller 级 |
 
@@ -463,6 +475,7 @@ L2 规则：
 
 ```text
 # filter_len：taps @ voice.rate
+room_tail_ms = 200        # 房间尾音预算；未知/大房间用 250
 need_ms = reference.fixed_delay_ms + room_tail_ms
 taps    = ceil(need_ms * voice.rate / 1000)
 taps    = round_up_to_128(max(256, taps))
@@ -488,8 +501,8 @@ taps    = min(taps, 16384)
 
 迁移规则：
 
-1. **没有 `audio.aec` 块的设备**：完全走旧规则——`ref_channels>0` → controller AEC 开；`ref_channels<1` → 关（`process.py:404-410`）。
-2. **声明了 `audio.aec` 的设备**：走新策略；LX06 的 manifest 应显式写 `openness: semi`、`who: controller`（保留现网），而不是依赖 `closed` 默认。
+1. **没有 `audio.aec` 块的设备**：完全走旧规则——`audio.aec.enabled=true` 且 `ref_channels>0` → controller AEC 开；否则关（`process.py:404-410`）。
+2. **声明了 `audio.aec` 的设备**：走新策略；LX06 的 manifest 应显式写 `openness: semi`、`who: controller`（保留现网；前提是厂商 AEC 可关，否则用 `both`/`device`），而不是依赖 `closed` 默认。
 3. `audio.aec.enabled=false` 仍是全局 kill switch：它关掉所有 controller AEC，但不改变各设备的 device AEC 状态。
 4. 新策略的 `who=device` 只有在 manifest 明确声明、或封闭类无参考时才生效；不能仅凭 `class=A` 推断。
 
@@ -518,7 +531,7 @@ taps    = min(taps, 16384)
 | `DeviceInfo.features` + `firmware` | `device/contract.py:39-52` | 门控 `requires_feature`（`ref_uplink`/`dot2_hw_ref`），并在控制台显示固件 | 加默认空值，旧 adapter 不受影响 |
 | `Metrics.aec_owner/aec_state/aec_degrade_reason/ref_source/ref_locked/self_hearing_turns/barge_stop_p50_ms` | `audio/protocol.py:103-150` | 没有这些，降级与自听无法观测；`ref_active` 单独会骗人（`findings.md:129`） | 加默认值，旧控制面忽略未知字段 |
 | 配置校验谓词（I1–I8） | `config` 加载 | 拒绝 `controller` + 无参考、`both` + 无 cascade、`per_channel` + 单麦 | 硬错误 + 明确文案，不静默 |
-| `_build_aec` 按 `who` 门控 | `audio/process.py:404-420` | 现在只看 `ref_channels`；必须改成 `effective.who ∈ {controller,both}` | 旧配置映射为 `who=controller`（有 ref）保持行为 |
+| `_build_aec` 按 `who` 门控 | `audio/process.py:404-420` | 现在只看全局 `audio.aec.enabled` + `ref_channels`，不看 `who`；必须改成 `effective.who ∈ {controller,both}` | 旧配置映射为 `who=controller`（有 ref）保持行为 |
 
 ### P1：强烈建议
 
@@ -556,6 +569,7 @@ taps    = min(taps, 16384)
 
 > 下面是 manifest 的 `audio` 片段（放进 `rui-device/v0` 的机型 manifest，或 dot2 `plug.json` 的 `audio` 下）。
 > `null` 表示“未知”，不是“0”；`who_allowed` 是硬白名单。
+> 注意：dot2 现在的 `plug.json` 只有 `capabilities.aec: "device"` 这个标量（`plug.json:48`），和下面的结构不一致；落地时要改成 `audio.aec`，或让 `audio.aec` 覆盖标量。
 
 ### 10.1 开放类 Dot2：controller AEC + 2ch ref
 
@@ -651,9 +665,11 @@ taps    = min(taps, 16384)
 - `who=controller` + `device.enabled=false` + `bypassable=true`：设备 AEC 可关，控制器接管；
 - `agc=false`：避免 AGC 让回声路径非线性；
 - `barge_in.mode=wake`：acoustic 还没实现，不要写 `both`；
-- `who_allowed` 不含 `both`：Dot2 默认不允许级联，测量时可临时通过 L2 打开（如果 rui 允许）。
+- `who_allowed` 不含 `both`：Dot2 默认不允许级联；测量时如果确实需要 `both`，必须先由 L0 把 `both` 加入白名单并打开 `cascade_allowed`，**L2 不能越过白名单**。
 
 ### 10.2 封闭类 LX06：device AEC + 无参考
+
+这是“厂商只给处理后单声道”的形态：控制器拿不到回采，只能信任设备 AEC。现网 open-xiaoai 的 8ch 变体见 §10.3。
 
 ```json
 {
@@ -695,9 +711,9 @@ taps    = min(taps, 16384)
         "tail_ms": 300,
         "delay_ms": 0,
         "ref_source": "auto",
-        "agc": true,
-        "barge_in": true,
-        "barge_in_threshold": 0.05,
+        "agc": null,
+        "barge_in": null,
+        "barge_in_threshold": null,
         "clamps": {
           "tail_ms": [50, 500],
           "delay_ms": [0, 1000],
@@ -729,52 +745,66 @@ taps    = min(taps, 16384)
 
 ### 10.3 LX06 实测变体：厂商回采
 
-现网 LX06 1.94.13 + open-xiaoai 实际能拿到 8ch（6 mic + 2 ref），并且 controller AEC 实测 25.2 dB。如果要把这个事实写进 manifest，只改以下字段（其余同 10.2）：
+现网 LX06 1.94.13 + open-xiaoai 实际能拿到 8ch（6 mic + 2 ref），并且 controller AEC 实测 25.2 dB。如果要把这个事实写进 manifest，按下面的 diff 改（其余同 10.2）：
 
-```json
-{
-  "openness": "semi",
-  "who": "controller",
-  "who_allowed": ["controller", "device", "none"],
-  "reference": {
-    "source": "vendor_tap",
-    "channels": 2,
-    "used_channels": 1,
-    "same_frame": true,
-    "rate": 16000,
-    "format": "s16le",
-    "bits": 16,
-    "fixed_delay_ms": 2.4,
-    "alignment": "fixed",
-    "dealiased": true,
-    "availability": "while_playing"
-  },
-  "controller": {
-    "enabled": true,
-    "filter_len": 4096,
-    "frame_ms": 20,
-    "cancel": "mix",
-    "barge_in": true
-  },
-  "device": {
-    "enabled": false,
-    "bypassable": false,
-    "controllable": false,
-    "ref_source": "auto"
-  },
-  "capture": {
-    "rate": 48000,
-    "channels": 8,
-    "mic_channels": 6,
-    "ref_channels": 2,
-    "bits": 32,
-    "mic_shift": 12,
-    "ref_shift": 16
-  }
-}
+```diff
+ audio.aec:
+-  openness: closed
+-  who: device
+-  who_allowed: [device, none]
++  openness: semi
++  who: controller            # 若厂商 AEC 可关
++  who_allowed: [controller, device, none]
+   reference:
+-    source: none
+-    channels: 0
+-    same_frame: false
+-    fixed_delay_ms: null
+-    alignment: unknown
+-    dealiased: false
++    source: vendor_tap
++    channels: 2               # ch6/ch7 同源，控制器只取第一路
++    used_channels: 1
++    same_frame: true
++    fixed_delay_ms: 2.4
++    alignment: fixed
++    dealiased: true
++    availability: while_playing
+   controller:
+-    enabled: false
++    enabled: true
+     filter_len: 4096
+     cancel: mix
+   device:
+-    enabled: true
++    enabled: false
+-    bypassable: false
++    bypassable: true          # 若关不掉，见下方“注意”
+     controllable: false
+     ref_source: auto
+-    agc: null
++    agc: false
+ audio.capture:
+-  rate: 16000
+-  channels: 1
+-  mic_channels: 1
+-  ref_channels: 0
++  rate: 48000
++  channels: 8
++  mic_channels: 6
++  ref_channels: 2
+-  bits: 16
++  bits: 32
++  mic_shift: 12
++  ref_shift: 16
 ```
 
-注意：`device.bypassable=false` 表示厂商 AEC 关不掉；如果它确实在消，`who=controller` 就变成了事实上的 `both`（级联）。这种“声明 controller、实际级联”的情况必须避免：要么确认厂商 AEC 可关，要么诚实地写 `who=both` + `cascade_allowed=true`。**不要用一个布尔值掩盖物理事实。**
+注意：如果厂商 AEC 关不掉（`bypassable=false`），`who=controller` 就变成了事实上的 `both`（级联），这违反 I6。这种“声明 controller、实际级联”的情况必须避免：
+
+- 确认厂商 AEC 可关 → `who=controller` + `bypassable=true`；
+- 关不掉 → 诚实写 `who=both` + `cascade_allowed=true` + `who_allowed` 加入 `both` + `device.agc=null/false`，并接受级联的 ERLE 预算。
+
+**不要用一个布尔值掩盖物理事实。**
 
 ---
 
@@ -793,17 +823,26 @@ def validate(plan, info):
             hard.append("controller needs a reference channel")
         if not plan.controller.enabled:
             hard.append("who=controller but controller.enabled=false")
-        if plan.device.enabled and not plan.device.bypassable:
+        if plan.device.enabled:
+            hard.append("who=controller requires device.enabled=false")
+        if plan.device.present and not plan.device.bypassable:
             hard.append("device AEC cannot be bypassed; use both or device")
     elif plan.who == "both":
         if not plan.constraints.cascade_allowed:
             hard.append("both requires cascade_allowed=true")
+        if not plan.device.enabled:
+            hard.append("both requires device.enabled=true")
         if plan.reference.source not in ("device_loopback", "vendor_tap"):
             hard.append("both needs a pre-device-AEC reference")
         if plan.device.agc:
             hard.append("AGC makes the cascade echo path non-linear; set agc=false")
-        if plan.device.tail_ms > 500 or plan.device.delay_ms > 1000:
+        if (plan.device.tail_ms or 0) > 500 or (plan.device.delay_ms or 0) > 1000:
             hard.append("device params out of clamp")
+    elif plan.who == "device":
+        if not plan.device.present:
+            hard.append("who=device but no device AEC is present")
+        if plan.controller.enabled:
+            hard.append("who=device requires controller.enabled=false")
     elif plan.who == "none":
         if plan.controller.enabled or plan.device.enabled:
             hard.append("who=none but an AEC is enabled")
@@ -814,7 +853,7 @@ def validate(plan, info):
     if plan.who == "controller" and plan.controller.cancel == "per_channel":
         if info.mic_channels < 2:
             soft.append("per_channel with one mic is pointless; use mix")
-    if plan.controller.filter_len < required_taps(plan):
+    if plan.controller.filter_len < required_taps(plan):   # required_taps：见 §8.2
         soft.append("filter_len shorter than delay+tail; echo tail may leak")
     if plan.reference.alignment == "search":
         hard.append("rui has no delay search; align in the adapter or use fixed")
@@ -904,6 +943,7 @@ def validate(plan, info):
 | 指标 | 封闭类（device AEC） | 开放类（controller AEC） | 测法 |
 |---|---|---|---|
 | controller ERLE P50 | n/a（不可见） | ≥20 dB（stretch 25） | 播放音乐/粉噪 10 min，取 `aec_erle_db` 的 P50 |
+| 设备侧 ERLE（参考值） | n/a | 18.2 dB（Dot2 64 ms tail，`2bcda35` 提交信息） | 仅作对照；低于 20 dB 是 controller 接管的理由之一 |
 | 总 ERLE（`both`） | n/a | ≥30 dB | 仅级联测量；设备侧 ERLE + controller 残差 |
 | `ref_active` | n/a | 播放中 100% | 控制台 metrics |
 | `ref_locked` | n/a | ≥95% 播放时间 | dealias 日志/健康字段（需新增） |
@@ -914,6 +954,8 @@ def validate(plan, info):
 | 上行带宽 | ≤32 KB/s | ≤70 KB/s | 设备/适配器统计 |
 | CPU | n/a（设备） | AEC rtf ≤0.5 | `doctor`/`aec_rtf` |
 | ASR 退化 | ≤2% 相对基线 | ≤2% | 同一组 20 句 |
+
+> 注：20.3 dB 是早期 bench 数据（16/300 ms tail，`aec-takeover.md:12`）；18.2 dB 是 64 ms tail 的现网数据（`2bcda35` 提交信息）。两者设置不同，不要直接比较。
 
 **判定口径**：
 
@@ -956,10 +998,10 @@ def validate(plan, info):
 
 ## 13. 风险与开放问题
 
-1. **16-bit 量化天花板（Dot2）**：设备 AEC 在 S24 上做，上行只到 S16；设备记录语音 RMS 0.0001–0.0006 FS（16-bit 只有 3–20 LSB），靠 `micGainDb` 预抬升。控制器 ERLE 可能被量化限制；不够就退回设备 AEC（`aec-takeover.md:93`）。
+1. **16-bit 量化天花板（Dot2）**：Dot2 的采集是 S24；设备内部 AEC/波束链路与上行 S16 之间存在量化差（`aec-takeover.md:93` 的口径）。设备记录语音 RMS 0.0001–0.0006 FS（16-bit 只有 3–20 LSB），靠 `micGainDb` 预抬升。无论具体在哪一级量化，controller 侧只看到 S16，ERLE 上限要实测；不够就退回设备 AEC。
 2. **dealias 锁定不是必然**：`clean()` 在匹配失败时回退 raw ch8（`dealias.go:183-252`）；raw 参考只有 ~1 dB。必须有 `ref_locked` 观测，否则会把“参考坏了”误判成“AEC 参数不对”。
 3. **`ref_active=true` 会骗人**：2ch 序号 bug 时 `ref_active=true`、ERLE≈0、自听（`findings.md:129`）。验收必须同时看 ERLE + `ref_locked` + 自听。
-4. **`both` 的物理风险**：AGC/非线性/过抑制；默认关闭，设备侧 ERLE ≤15 dB，且必须 `agc=false`。
+4. **`both` 的物理风险**：AGC/非线性/过抑制；默认关闭，设备侧 ERLE ≤15 dB，且必须 `agc=false`。设备没有 ERLE 目标参数，这个预算只能靠 tail/开关间接逼近；做不到就不要开 `both`（见 §3.3）。
 5. **rui 没有延迟搜索**：`alignment=search` 目前不可实现；要么适配器做整数样本平移，要么拒绝。不要写“支持 search”的承诺。
 6. **每设备 vs 全局配置**：这是最大的结构缺口；没有 `devices[].aec`，混合编队只能靠“有没有 ref”隐式分流。
 7. **LX06 厂商 AEC 是否可关未知**：`bypassable` 必须由 probe 证实，不能假设；关不掉就不能声明 `who=controller`。
@@ -979,7 +1021,7 @@ def validate(plan, info):
 |---|---|---|
 | `src/house_ear/config/schema.py` | 120-151, 154-180, 183-200, 259-266, 308-312 | `DeviceConfig`（含 `params`）、`CaptureConfig`、`VoiceConfig.barge_in`、`AecConfig`、`AudioConfig` 全局 |
 | `src/house_ear/audio/aec.py` | 1-19, 83-89, 126-187, 208-314 | speexdsp MDF、90 Hz 高通、`ref_active`、ERLE、`mix`/`per_channel`、2.4 ms lead |
-| `src/house_ear/audio/process.py` | 4-8, 404-420, 474-499, 587-622, 1516-1525 | 平面以帧为准、`_build_aec` 只按 `ref_channels` 门控、只取第一路参考、barge 路径、metrics |
+| `src/house_ear/audio/process.py` | 4-8, 404-420, 474-499, 587-622, 1516-1525 | 平面以帧为准、`_build_aec` 只看全局开关 + `ref_channels`、只取第一路参考、barge 路径、metrics |
 | `src/house_ear/device/contract.py` | 23-31, 39-59, 62-95 | `Capability.REFERENCE`、`DeviceInfo`、`AudioFrame.reference_channels` |
 | `src/house_ear/audio/protocol.py` | 90-150, 167-190 | `Ready`/`Metrics`/`Wake` 字段 |
 | `src/house_ear/plugins/models.py` | 94-118, 304-318 | `ProtocolSpec` extra allow；`DeviceManifest` extra forbid + `capabilities: list[Capability]` |
@@ -998,8 +1040,8 @@ def validate(plan, info):
 | `docs/p3-firmware-patch.md` | 44-58, 69-101, 114-118, 160, 187-190 | `RefForUplink`、2ch 成帧、`aecEnabled=false`、假设备 0.1 dB、验收 |
 | `docs/findings.md` | 129 | 2ch 序号错位 → `ref_active=true`、ERLE≈0、自听 |
 | `docs/handoff-morning.md` | 55 | 现网 ERLE 0.5–9 dB、自听未消失 |
-| `src/rui_dot2_bridge/adapter.py` | 213-233, 557-599 | `DeviceInfo`/`REFERENCE`、manifest 读取 |
-| `src/rui_dot2_bridge/device_link.py` | 285-295 | config 推送只有 `aecEnabled`/`micGainDb` |
+| `src/rui_dot2_bridge/adapter.py` | 144-170, 561-619 | 设备侧 DSP 环境变量、`DeviceInfo`/`REFERENCE`、manifest 读取 |
+| `src/rui_dot2_bridge/device_link.py` | 302-311 | config 推送：`aecEnabled`/`micGainDb`/`aecTailMs`/`aecDelayMs`/`agcEnabled`/`bargeIn*` |
 
 ### 设备侧（只读 EchoMuse 源码）
 
