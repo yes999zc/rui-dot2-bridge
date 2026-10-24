@@ -54,6 +54,21 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 Mac dev 实例隔离；部署细节与踩坑见 [`docs/deploy-honor-nas.md`](docs/deploy-honor-nas.md)，复盘（谁的锅、改正项）见
 [`docs/deploy-honor-nas-retro.md`](docs/deploy-honor-nas-retro.md)。
 
+## AEC（谁消回声）
+
+三份调研在本仓库：
+
+- [`docs/aec-rui-analysis.md`](docs/aec-rui-analysis.md) — rui AEC 诊断：帧对齐正确、线性上限 14–18 dB、
+  rui 增量 ERLE 0.5–9 dB 不是系统 ERLE；
+- [`docs/aec-device-tuning.md`](docs/aec-device-tuning.md) — 设备 AEC：稳态 14–18.2 dB；tail/AGC 参数在
+  当前拓扑下无效；可动的只有 `wakeMic`/播放电平/固件改动；
+- [`docs/aec-parameter-model.md`](docs/aec-parameter-model.md) — `who`/`reference`/`constraints`
+  参数模型，封闭 vs 开放两类音箱的默认值。
+
+结论：**生产走 `ref_channels=0` + 设备 AEC**；`DOT2_PLAYBACK_GATE_MS` 作为可选半双工兜底。
+设备侧唤醒（`oww_wake`）作为 barge 的正式路径，已向 rui 提契约请求
+[yes999zc/rui#3](https://github.com/yes999zc/rui/issues/3)。
+
 ## 目录
 
 ```
