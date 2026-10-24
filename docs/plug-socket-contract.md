@@ -51,6 +51,10 @@
   "capabilities": { "led": { "count": 12 }, "keys": true, "barge_in": false, "aec": "device" },
   "health": { "fields": ["connected", "firmware", "rtt_ms", "dropped_audio"] },
   "limits": { "uplink_kbps": 32, "notes": ["mono/no-ref => rui disables AEC+barge-in"] },
+  "control": {
+    "loudness": { "bind": "127.0.0.1:8872", "routes": ["GET /loudness", "PUT /loudness"],
+                  "note": "device-specific EQ/limiter tuning; the socket may proxy it" }
+  },
   "entrypoint": "rui_dot2_bridge.adapter:build"
 }
 ```

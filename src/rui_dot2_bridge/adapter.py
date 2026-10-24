@@ -28,7 +28,9 @@ from house_ear.device.contract import (
     Transport,
 )
 
+from .control import start_control_server
 from .device_link import DeviceLink
+from .dsp import LoudnessConfig, LoudnessProcessor
 from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE
 from .volume import VOLUME_CAP_PERCENT, capped_level, clamp_percent
 
@@ -137,6 +139,22 @@ class Dot2Adapter(DeviceAdapter):
         }
         self._inject_port = inject_port
         self._inject_server: asyncio.base_events.Server | None = None
+        # Loudness: stock EQ ladder + limiter, runtime-tunable over loopback HTTP.
+        self._eq_dir = Path(os.environ.get("DOT2_EQ_DIR") or "artifacts/eq-prototype")
+        self._loudness_file = Path(os.environ.get("DOT2_LOUDNESS_FILE") or "dev/rui/loudness.json")
+        self._control_port = int(os.environ.get("DOT2_CONTROL_PORT", "0") or 0)
+        config = LoudnessProcessor.load_config(self._loudness_file)
+        env_mode = (os.environ.get("DOT2_LOUDNESS_MODE") or "").strip()
+        if env_mode:
+            config.mode = env_mode
+        if not os.environ.get("DOT2_EQ_DIR"):
+            # Default lookup: the evaluation copy, then secrets/eq for a deployment.
+            for candidate in ("artifacts/eq-prototype", "secrets/eq"):
+                if (Path(candidate) / "EQ_100.cfg").is_file():
+                    self._eq_dir = Path(candidate)
+                    break
+        self._loudness = LoudnessProcessor(config, self._eq_dir)
+        self._control_server: asyncio.base_events.Server | None = None
         # Dev-only: tee the microphone to a WAV so a turn can be checked without a
         # person in the room (e.g. feed it to /api/v1/asr). Off unless asked for.
         self._record_path = os.environ.get("DOT2_RECORD") or ""
@@ -207,6 +225,11 @@ class Dot2Adapter(DeviceAdapter):
             "dropped_audio": link.stats.dropped_audio,
             "volume_level": link.volume_level,
             "volume_cap_percent": link.volume_cap_percent,
+            "loudness": {
+                "enabled": self._loudness.config.enabled,
+                "mode": self._loudness.config.mode,
+                "curve": self._loudness.curve_name,
+            },
         }
 
     def volume_cap(self) -> float:
@@ -223,6 +246,11 @@ class Dot2Adapter(DeviceAdapter):
             from .inject import start_inject_server
 
             self._inject_server = await start_inject_server(self, "127.0.0.1", self._inject_port)
+        if self._control_port:
+            self._control_server = await start_control_server(
+                self._loudness, "127.0.0.1", self._control_port, self._loudness_file
+            )
+        log.info("dot2 adapter: loudness %s", self._loudness.describe())
         log.info(
             "dot2 adapter: waiting for %s on port %s (volume ceiling %.0f%%)",
             self.device_id,
@@ -238,6 +266,10 @@ class Dot2Adapter(DeviceAdapter):
             self._inject_server.close()
             await self._inject_server.wait_closed()
             self._inject_server = None
+        if self._control_server is not None:
+            self._control_server.close()
+            await self._control_server.wait_closed()
+            self._control_server = None
         if self._link is not None:
             await self._link.stop()
             self._link = None
@@ -287,6 +319,9 @@ class Dot2Adapter(DeviceAdapter):
             )
         if self._link is None:
             raise RuntimeError("dot2 adapter is not open")
+        # Stock EQ curve follows the device's current level; then EQ + limiter.
+        self._loudness.set_level(self._link.volume_level)
+        pcm = self._loudness.process_bytes(pcm)
         self._frame_buffer.extend(pcm)
         await self._drain_frames()
         self._playing = True
