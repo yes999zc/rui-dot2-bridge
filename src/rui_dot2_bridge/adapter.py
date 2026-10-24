@@ -179,6 +179,10 @@ class Dot2Adapter(DeviceAdapter):
         self._prebuffer_task: asyncio.Task | None = None
         dump = os.environ.get("DOT2_PLAYBACK_DUMP", "").strip()
         self._dump_dir = Path(dump) if dump else None
+        uplink_dump = os.environ.get("DOT2_UPLINK_DUMP", "").strip()
+        self._uplink_dump = Path(uplink_dump) if uplink_dump else None
+        self._uplink_dump_handle = None
+        self._uplink_blocks = 0
         self._dump_buf = bytearray()
         self._last_chunk_at: float | None = None
         self._inject_server: asyncio.base_events.Server | None = None
@@ -317,6 +321,9 @@ class Dot2Adapter(DeviceAdapter):
         )
 
     async def close(self) -> None:
+        if self._uplink_dump_handle is not None:
+            self._uplink_dump_handle.close()
+            self._uplink_dump_handle = None
         if self._eos_task is not None:
             self._eos_task.cancel()
             self._eos_task = None
@@ -350,6 +357,15 @@ class Dot2Adapter(DeviceAdapter):
         try:
             async for block in self._link.frames():
                 self._record(block)
+                if self._uplink_dump is not None:
+                    if self._uplink_dump_handle is None:
+                        self._uplink_dump.parent.mkdir(parents=True, exist_ok=True)
+                        self._uplink_dump_handle = self._uplink_dump.open("wb")
+                    self._uplink_dump_handle.write(block)
+                    self._uplink_blocks += 1
+                    if self._uplink_blocks <= 5 or self._uplink_blocks % 100 == 0:
+                        log.info("dot2 adapter: uplink block %d bytes=%d channels=%d",
+                                 self._uplink_blocks, len(block), self.channels)
                 for piece in _rechunk(block, self.channels, PLAY_CHUNK_MS):
                     if not piece:
                         continue

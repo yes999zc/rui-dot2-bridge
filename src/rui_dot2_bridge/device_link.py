@@ -33,6 +33,7 @@ from websockets.exceptions import ConnectionClosed
 
 from .frames import (
     FRAME_MIC,
+    mic_control,
     FRAME_NO_SPEECH_TIMEOUT,
     FRAME_VAD_END,
     speaker_eos,
@@ -379,6 +380,14 @@ class DeviceLink:
                 kind = raw[0]
                 payload = bytes(raw[1:])
                 if kind == FRAME_MIC:
+                    # [0x01][seq u16 BE][PCM]; the sequence is not audio.
+                    if len(raw) < 3:
+                        continue
+                    payload = bytes(raw[3:])
+                    control = mic_control(payload) if len(payload) == 1 else None
+                    if control is not None:
+                        log.debug("dot2 link: mic control 0x%02x", control)
+                        continue
                     self._enqueue_audio(payload)
                 elif kind in (FRAME_VAD_END, FRAME_NO_SPEECH_TIMEOUT):
                     log.debug("dot2 link: turn sentinel 0x%02x", kind)
