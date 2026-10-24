@@ -143,6 +143,14 @@ class PlaybackTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.link.sent[-1]), SPEAKER_CHUNK_BYTES)  # tail padded
         self.assertEqual(self.link.sent[-1][-2:], b"\x00\x00")  # faded to silence
 
+    async def test_stop_playback_when_idle_sends_nothing(self) -> None:
+        # rui calls stop_playback before every reply; a flush here would race the
+        # first PCM blocks on the other socket and cost ~400 ms of re-prime.
+        await self.adapter.stop_playback()
+        self.assertEqual(self.link.flushed, 0)
+        self.assertEqual(self.link.eos, 0)
+        self.assertEqual(len(self.link.sent), 0)
+
     async def test_stop_playback_flushes_and_drops_buffer(self) -> None:
         await self.adapter.play(bytes(5000), sample_rate=48000, channels=1)
         await self.adapter.stop_playback()
