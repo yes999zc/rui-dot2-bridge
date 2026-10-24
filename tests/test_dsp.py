@@ -67,6 +67,17 @@ class LimiterTest(unittest.TestCase):
         delay = limiter.lookahead
         np.testing.assert_allclose(out[delay:], x[: len(x) - delay], atol=1e-9)
 
+    def test_asymmetric_negative_peaks_are_limited(self) -> None:
+        # Speech after the EQ can swing much further negative than positive; the
+        # first implementation took the window max without abs() and let the
+        # negative peaks hit the hard clip (audible "破音" on 2026-10-24).
+        limiter = Limiter(RATE, ceiling_db=-1.0)
+        x = np.full(4800, 0.2)
+        x[::97] = -1.4
+        x[48::97] = 0.5
+        out = limiter.process(x)
+        self.assertLessEqual(float(np.max(np.abs(out))), 10 ** (-1.0 / 20.0))
+
     def test_chunk_boundaries_do_not_leak_peaks(self) -> None:
         limiter = Limiter(RATE, ceiling_db=-1.0)
         x = tone(0.5, amp=0.9)

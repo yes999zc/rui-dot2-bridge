@@ -186,6 +186,8 @@ class Limiter:
         self.lookahead = max(1, int(rate * lookahead_ms / 1000))
         self.release = math.exp(-1.0 / max(1.0, rate * release_ms / 1000.0))
         self.gain = 1.0
+        self.min_gain = 1.0
+        self.max_gain = 1.0
         # Output is delayed by the lookahead so the window really is in the
         # future; the old per-chunk version padded the chunk end with its own
         # last sample, which under-limited the last ~5 ms of every 100 ms and
@@ -196,18 +198,27 @@ class Limiter:
         if x.size == 0:
             return x
         combined = np.concatenate([self.pending, x])
-        tail = combined[-1] if combined.size else 0.0
-        padded = np.concatenate([combined, np.full(self.lookahead, tail)])
+        # peak must be taken over |signal|: with signed samples a window can sit
+        # entirely on a large NEGATIVE excursion (asymmetric speech after the EQ),
+        # and forgetting abs() let those negative peaks through to the hard clip -
+        # the "破音" heard on 2026-10-24 during P2. Regression in tests.
+        magnitude = np.abs(combined)
+        padded = np.concatenate([magnitude, np.full(self.lookahead, magnitude[-1])])
         windows = np.lib.stride_tricks.sliding_window_view(padded, self.lookahead + 1)
         peak = windows.max(axis=1)[: len(x)]
         desired = np.minimum(1.0, self.target / np.maximum(peak, 1e-12))
         out = np.empty(len(x), dtype=np.float64)
         g = self.gain
         release = self.release
+        gmin = gmax = g
         for i, target in enumerate(desired):
             g = target if target < g else release * g + (1.0 - release) * target
             out[i] = combined[i] * g
+            gmin = min(gmin, g)
+            gmax = max(gmax, g)
         self.gain = g
+        self.min_gain = min(self.min_gain, gmin)
+        self.max_gain = max(self.max_gain, gmax)
         self.pending = combined[len(x):]
         return np.clip(out, -self.hard_clip, self.hard_clip)
 
