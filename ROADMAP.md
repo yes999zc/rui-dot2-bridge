@@ -238,6 +238,13 @@
 代码侧：`device_link.py`（设备协议）、`adapter.py`（rui 契约）、`standalone.py`（无 rui 探针）、
 `inject.py`（仅测试用注入）、`volume.py`（30% 上限）、18 个单测通过；`dev_rui.sh` 一条命令起本机 rui。
 
+## 8.5 工作界面：插头 / 插座（2026-10-24 上午）
+
+两条维护线解耦：rui 定义**插座规范**，音箱侧交付**插头**（声明式 manifest + 实现）。
+方向、边界归属、盲开假设与待确认项见
+[`docs/plug-socket-contract.md`](docs/plug-socket-contract.md)。插座尚未开发，本方先盲开：
+下一步把参数收拢成 `plug.json`，`build()` 只从 manifest + 覆盖读参数。
+
 ## 9. v1 → v2 变更
 
 1. **P3 重写**：从"9 声道原始流"改为"2ch（波束 + 去混叠 ch8）"，并补上 ch8 混叠这个硬坑与离线验证步骤。

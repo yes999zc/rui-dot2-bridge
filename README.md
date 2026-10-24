@@ -53,6 +53,7 @@ docs/aec-takeover.md    rui 接管 AEC 的可行性（2ch 方案、ch8 去混叠
 docs/p3-firmware-patch.md  P3 固件补丁计划（上游代码路径、约 100 行改动、A/B 槽安装与回滚）
 docs/p0-p1-report.md    P0/P1 真机实测报告（协议、音量、TTS 播放、声学回路转写、KWS 差距）
 docs/p2-runbook.md      P2 真人实测 runbook（唤醒/打断/误唤醒，含工具用法）
+docs/plug-socket-contract.md  插头/插座 工作界面（rui 定义插座、本仓库交付插头；当前盲开）
 docs/deploy.md          部署与回滚 runbook
 src/rui_dot2_bridge/    adapter 实现（Phase 1 起填充）
 src/sitecustomize.py    注入 rui 进程完成 adapter 注册（不改 rui 仓库）
