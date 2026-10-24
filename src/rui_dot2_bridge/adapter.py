@@ -154,7 +154,11 @@ class Dot2Adapter(DeviceAdapter):
         self._aec_delay_ms = int(_delay) if _delay else None
         self._agc_enabled = None if not _agc else _agc not in ("0", "false", "no", "off")
         self._barge_in_enabled = None if not _barge else _barge not in ("0", "false", "no", "off")
-        self._barge_in_threshold = int(_barge_thr) if _barge_thr else None
+        # float first: a value like "0.05" used to crash int() (review finding)
+        self._barge_in_threshold = float(_barge_thr) if _barge_thr else None
+        _wake_mic = os.environ.get("DOT2_WAKE_MIC", "").strip()
+        self._wake_mic = int(_wake_mic) if _wake_mic else None
+        self._aec_ref_source = os.environ.get("DOT2_AEC_REF_SOURCE", "").strip() or None
         self._link: DeviceLink | None = None
         self._link_kwargs = {
             "certs_dir": Path(secrets_dir),
@@ -171,6 +175,8 @@ class Dot2Adapter(DeviceAdapter):
             "agc_enabled": self._agc_enabled,
             "barge_in_enabled": self._barge_in_enabled,
             "barge_in_threshold": self._barge_in_threshold,
+            "wake_mic": self._wake_mic,
+            "aec_ref_source": self._aec_ref_source,
             "oww_on_device": oww_on_device,
         }
         self._inject_port = inject_port
