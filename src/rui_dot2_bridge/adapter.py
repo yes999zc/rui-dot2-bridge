@@ -84,7 +84,12 @@ class _Dot2Services:
 
 DEFAULT_TLS_PORT = 8870
 DEFAULT_INJECT_PORT = 8871   # loopback-only test hook, off unless DOT2_INJECT_PORT is set
-EOS_IDLE_S = 0.4          # a gap this long means the reply is over -> 0x03
+# A gap this long means the reply is over -> 0x03. 0.4 s was too eager: TTS
+# audio arrives in bursts, and any >0.4 s stall inside one reply closed the
+# stream and reopened it (device primeWait ~30-800 ms) - heard as a stutter
+# mid-sentence (2026-10-24, "小瑞说 2 的时候中间卡了"). The device buffers
+# ~300 ms, so 1.2 s of silence still ends the stream long before anything starves.
+EOS_IDLE_S = 1.2
 PLAY_CHUNK_MS = 20        # re-chunk the device's 80 ms blocks for the plane
 
 
