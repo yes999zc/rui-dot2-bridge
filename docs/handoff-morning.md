@@ -18,6 +18,7 @@
 | 设备 AEC | 开（`[aec] enabled: frame=512 tail=64ms`）；rui 侧 AEC 因无参考关闭 |
 | 旧 EchoMuse controller | 容器保留、默认停止（接管时会推 85/127） |
 | 8 小时 soak | ✅ 已完成：10:44→18:44，953 采样、0 间断；11:18 后连续 **7.4h 无平面重建/无断连**（`docs/soak-report.md`） |
+| 插头 | `plug.json`（盲开 v0）+ `build()` 按 manifest<env<DeviceConfig 取值；doctor 含 manifest 自检 |
 | 播放 | flush 后加 **pong 屏障**（保 prime 旁路、免跨 socket 竞态）+ **0.45 s 预缓冲**（`DOT2_PREBUFFER_MS`）；实测 `primeWait` 17–22 ms、`underruns=0`、流内 `maxGap` 123–156 ms；回复延迟 +~0.45 s |
 
 ## 2. 2026-10-24 白天修掉的真问题
@@ -56,7 +57,7 @@
 2. **P3 固件**（2ch 交出 AEC 参考）：已编译未安装（sha256 `876f63b4…`），A/B 槽可回滚，等 9 哥决定。
 3. **严格 G1**（20 次唤醒 ≥19）：修复后只有 7 次干净样本，可选补 13 次。
 4. **NAS 一次性部署**：等 M1 清单全绿（soak、plug.json、窗口）。
-5. **插头 `plug.json`**：契约已写（`docs/plug-socket-contract.md`），实现是盲开阶段下一步。
+5. ~~插头 `plug.json`~~：盲开 v0 已落地（`plug.json` + `plug.py`）；等 rui 插座规范再对齐字段。
 
 ## 5. 常用操作
 

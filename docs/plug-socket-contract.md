@@ -1,6 +1,8 @@
 # 插头 / 插座 契约（方向记录，2026-10-24）
 
 > 状态：**方向已定，rui 侧插座尚未开发，先按本文件"盲开"**。
+> 2026-10-24 更新：盲开第一版已落地——仓库根目录 `plug.json`（声明）+ `src/rui_dot2_bridge/plug.py`（加载/查找），
+> `build()` 按「manifest < `DOT2_*` 环境变量 < rui DeviceConfig」的优先级取参数；`doctor.py` 增加 manifest 自检。
 > 本文件记录 9 哥 2026-10-24 上午口述的工作界面，以及本方（音箱侧）在拿到
 > 正式规范前采用的临时假设。拿到 rui 的插座规范后，本文件应以那份规范为准修订。
 
@@ -61,6 +63,17 @@
 
 P3 之后（固件送出 2ch 参考）只需改插头声明：`capture.channels=2, ref=1, capabilities.aec="rui"`，
 实现由同一 entrypoint 提供，插座不需要知道设备型号。
+
+## 已落地（盲开 v0，2026-10-24）
+
+- `plug.json`：identity / transport / audio(capture+playback) / volume / capabilities /
+  loudness / health / limits / control / entrypoint 全部声明；
+- `plug.py`：`find_manifest()` 支持 `DOT2_PLUG_FILE` 覆盖，`load()` 坏文件只告警不致命；
+- `build()` 实际消费的字段：`transport.port`、`audio.capture.{mic_channels,ref_channels,mic_gain_db}`、
+  `audio.playback.{prebuffer_ms,prebuffer_start_ms,eos_idle_ms}`、`volume.ceiling_percent`、
+  `capabilities.aec`、`loudness.*`（无持久化文件时的默认曲线）、`control.loudness.*`；
+- 优先级：**manifest 提供默认值，环境变量覆盖，rui 的 DeviceConfig 最终生效**（host/port/secrets 归 rui）；
+- `doctor.py` 5 项 manifest 自检（存在/可解析、entrypoint、playback rate、capture rate、ceiling）。
 
 ## 盲开假设（插座规范出来前，本方按此实现）
 

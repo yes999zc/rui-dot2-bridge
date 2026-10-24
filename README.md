@@ -41,6 +41,7 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 | **响度** | 原厂 EQ_50…EQ_100 阶梯 + look-ahead 限幅（**+9.7 dB A 计权、零削波**）；参数运行时可调，见 `docs/loudness-eq.md` |
 | **音量** | 上限可配，现为 **100%（level 127 = 0 dB）**；控制台回读设备实际值；物理按键在此上限内有效 |
 | **麦克风** | 设备预增益 **18 dB**（默认 24 dB 会削波；实测语音段峰值 0.70–0.88） |
+| **插头** | `plug.json` 声明（transport/audio/volume/capabilities/loudness/control），`build()` 按 manifest<env<DeviceConfig 取值 |
 | **静音** | `DOT2_MUTE=1` 重启：音量上限=0，唤醒/ASR/打断照常，只是不出声 |
 | **播放空档** | 已修：flush + pong 屏障 + 0.45 s 预缓冲（延迟 +0.45 s，设备 `underruns=0`）；rui 侧更优修法见 [rui#1](https://github.com/yes999zc/rui/issues/1) |
 | **工具链** | ✅ `scripts/check.sh`、`doctor.py`、`device_health.py`、`p2_trials.py`、`soak.py`；ruff 干净 |

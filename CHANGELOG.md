@@ -14,6 +14,9 @@
 
 ### Added
 
+- 插头 manifest 盲开 v0：`plug.json` + `src/rui_dot2_bridge/plug.py`，`build()` 按
+  「manifest < `DOT2_*` 环境变量 < rui DeviceConfig」取值；`doctor.py` 增加 manifest 自检；
+  部署 bundle 自带 `plug.json`。
 - `DOT2_MUTE=1`：静音扬声器但保留唤醒/ASR/打断。
 - 响度运行时调参 `GET/PUT /loudness`（`DOT2_CONTROL_PORT`，dev 8872）。
 - `tools/stock_eq.py`（离线 EQ 评估）与 `tools/eq_variants.py`（变体试听）。
