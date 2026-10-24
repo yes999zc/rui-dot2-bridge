@@ -144,6 +144,9 @@ class Dot2Adapter(DeviceAdapter):
             "oww_on_device": oww_on_device,
         }
         self._inject_port = inject_port
+        # +24 dB (the device default) clips normal speech; 18 dB keeps the peaks
+        # inside full scale. Override with DOT2_MIC_GAIN_DB=24 to go back.
+        self._mic_gain_db = int(os.environ.get("DOT2_MIC_GAIN_DB", "18") or 18)
         # Debug: capture exactly what we hand to the device (DOT2_PLAYBACK_DUMP=dir).
         # Used to tell a gap in our processed PCM from a stream split on the wire.
         self._dump_dir = Path(os.environ.get("DOT2_PLAYBACK_DUMP") or "")
@@ -251,6 +254,7 @@ class Dot2Adapter(DeviceAdapter):
         return self.info
 
     async def open(self) -> None:
+        self._link_kwargs["mic_gain_db"] = self._mic_gain_db
         self._link = DeviceLink(**self._link_kwargs)  # type: ignore[arg-type]
         await self._link.start()
         if self._inject_port:
@@ -330,6 +334,10 @@ class Dot2Adapter(DeviceAdapter):
             )
         if self._link is None:
             raise RuntimeError("dot2 adapter is not open")
+        # Fresh stream: drop the previous stream's FIR/limiter state, otherwise its
+        # tail is mixed into the first milliseconds of this one (a click after "在呢").
+        if not self._playing:
+            self._loudness.reset_stream()
         # Stock EQ curve follows the device's current level; then EQ + limiter.
         self._loudness.set_level(self._link.volume_level)
         pcm = self._loudness.process_bytes(pcm)

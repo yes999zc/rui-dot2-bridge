@@ -170,6 +170,15 @@ class ProcessorTest(unittest.TestCase):
         delay = proc._limiter.lookahead
         np.testing.assert_allclose(out[delay:], x[: len(x) - delay], atol=1e-3)
 
+    def test_reset_stream_drops_the_previous_tail(self) -> None:
+        proc = self.processor()
+        first = proc.process_bytes(pcm(tone(0.05, amp=0.5)))
+        self.assertGreater(len(first), 0)
+        proc.reset_stream()
+        silence = proc.process_bytes(pcm(np.zeros(4800)))
+        out = np.frombuffer(silence, dtype="<i2") / 32768.0
+        self.assertLess(float(np.max(np.abs(out))), 1e-6)
+
     def test_config_roundtrip(self) -> None:
         path = self.dir / "loudness.json"
         config = LoudnessConfig(mode="custom", trim_db=2.5,

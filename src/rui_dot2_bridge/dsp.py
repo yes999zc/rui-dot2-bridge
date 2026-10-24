@@ -287,6 +287,23 @@ class LoudnessProcessor:
             self._fir = FirStream(taps)
         return name
 
+    def reset_stream(self) -> None:
+        """Start a new playback stream with clean state.
+
+        The FIR tail, the biquad delay lines and the limiter's look-ahead line all
+        carry samples across chunks. That is what makes chunked processing seamless
+        *within* a stream, but across an idle boundary it replays the last few
+        milliseconds of the previous stream on top of the first samples of the new
+        one - heard as a click/noise right after a reply ("在呢" followed by a
+        rattle, 2026-10-24).
+        """
+        if self._fir is not None:
+            self._fir.tail[:] = 0.0
+        for biquad in (*self._biquads, *self._shelves):
+            biquad.x1 = biquad.x2 = biquad.y1 = biquad.y2 = 0.0
+        self._limiter.pending[:] = 0.0
+        self._limiter.gain = 1.0
+
     # -------------------------------------------------------------- processing
     def process_bytes(self, pcm: bytes) -> bytes:
         cfg = self.config
