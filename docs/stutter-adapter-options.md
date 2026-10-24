@@ -3,34 +3,39 @@
 - 日期：2026-10-24
 - 范围：只读调研。未改代码/配置，未重启 rui，未碰设备音量/静音（设备当前 `0/127` 保持静音）。
 - 相关：rui issue #1；同目录 `docs/stutter-rui-xiaoai.md`（小爱对照与 406 ms flush 竞态）。
-- 结论先行：**不要简单删掉每轮开头的 `stop_playback()` flush**。它确实制造了 control/data 双 WS 的竞态，但它同时是 Dot 固件 1.024 s prime 门的“旁路”。正确的最小修复是 **flush + 控制面 ping/pong 屏障**；在此之上，再用 **可配置的 250–300 ms 发送侧 lead 队列 + 42.7 ms 定速 + 空档补零** 作为句中 TTS 断供的兜底。`wait_consumed` 在 v2.18.1 上没有设备播放头可报，不能作为本次方案。
+- **实现状态（2026-10-24 11:11）**：`c766fcd` 已把 `stop_playback()` 改成 idle no-op，并加了 `DOT2_PREBUFFER_MS=450`、`PREBUFFER_START_S=0.35`、`EOS_IDLE_S=0.7`。实测 post-fix 设备流 `primeWait=762–968 ms, minDepth=7, underruns=0, maxGap=697–701 ms`（03:11 UTC 三条）。**但当前 prebuffer 阈值有单位 bug，0.45 s 实际没有生效**（见 §2.1）；400 ms 空档目前是被 no-op 后恢复的 1.024 s 设备 prime 吸收的，首声代价约 **0.8–1.0 s**，不是提交说明里的 0.45 s。
+- 结论先行：**不要回滚 idle no-op**（它确实消掉了 A 类 406 ms），但也不要相信“+0.45 s”的成本。要低延迟，应**修 prebuffer 阈值**，并考虑 **flush + 控制面 ping/pong 屏障**（保留 prime 旁路，把首声压回约 0.45 s）；要最简，就保留现状、接受约 1 s 首声。`wait_consumed` 在 v2.18.1 上没有设备播放头可报，不能作为本次方案。
 
 ---
 
 ## 0. 结论摘要
 
 1. **本次观察到的 406 ms 有两个层次**：
-   - **每轮回答开头**的 406 ms：`stop_playback()` 把 `speaker_flush` 发到 `/control`，PCM 发到 `/data`，两条 TCP 连接没有顺序保证；设备先收了前 2 个 100 ms 块，再处理 flush，把它们丢掉并结束流。同目录 `stutter-rui-xiaoai.md` 已用 11/11 的 `calls.log` + 设备 `periods=4 recvSpan=5ms` 对齐证实。
-   - **句中 TTS 到达空档**：rui 的 `Pacer` 稳态只保 250 ms（上限 320 ms），Dot 没有 adapter 侧队列；一旦设备队列在空档处排空，固件可能把这次“排空”当成流自然结束，下一段重新 prime **1.024 s**，把 400 ms 放大成约 1.0–1.4 s 的停顿。
-2. **设备侧真实缓冲比“约 300 ms”大得多**：`0x02` 是 4096 B = **42.667 ms**；固件深度队列 **128 个 period ≈ 5.46 s**；ALSA 硬件环 **4×2048 stereo frames = 170.7 ms**；最后一个 period 被取走后还会响约 **213.3 ms**；prime 门是 **24 个 period = 1.024 s**（或 EOS）。所以瓶颈不在设备容量，而在“rui 只领先 250 ms”和“prime 门是否被绕过/是否被误关”。
+   - **每轮回答开头**的 406 ms：`stop_playback()` 把 `speaker_flush` 发到 `/control`，PCM 发到 `/data`，两条 TCP 连接没有顺序保证；设备先收了前 2 个 100 ms 块，再处理 flush，把它们丢掉并结束流。同目录 `stutter-rui-xiaoai.md` 已用 11/11 的 `calls.log` + 设备 `periods=4 recvSpan=5ms` 对齐证实。**`c766fcd` 的 idle no-op 已消掉这一类。**
+   - **句中 TTS 到达空档**：rui 的 `Pacer` 稳态只保 250 ms（上限 320 ms）。在当前 no-op 版本里，设备重新走 **1.024 s prime**，所以 400 ms 空档被 prime 缓冲吸收；代价是首声要等 prime 填满（实测 0.76–0.97 s）。如果 prime 被绕过、或空档长到把 prime 缓冲耗尽，仍会重新 prime。
+2. **设备侧真实缓冲比“约 300 ms”大得多**：`0x02` 是 4096 B = **42.667 ms**；固件深度队列 **128 个 period ≈ 5.46 s**；ALSA 硬件环 **4×2048 stereo frames = 170.7 ms**；最后一个 period 被取走后还会响约 **213.3 ms**；prime 门是 **24 个 period = 1.024 s**（或 EOS）。所以瓶颈不在设备容量，而在“首声要不要等 prime”和“队列排空后是否被误判为流结束”。
 3. **设备没有逐块播放头回报**：只有流排空后一条 `playback_stats`（`periods/underruns/minDepth/primeWaitMs/recvSpanMs/maxGapMs/bytesRecv`），没有 `consumed`/进度事件。`audioStream.lastTakeNs` 只在设备内部给 AEC 用。**要补 `wait_consumed` 必须改固件 + 协议**，而且 `Credit` 只是“在途上限”，不增加 lead，无法填 400 ms 空档。
-4. **方案排序**：
-   - **P0（必做，~0.5 天）**：`stop_playback()` 改成“flush → 控制面 ping/pong 屏障 → 再放首帧”；若上一路仍在播，顺序为 `flush → EOS → 屏障`（`flush` 已把 `eosPending` 置 true，EOS 只负责清 `discarding`，不需要第三次 flush）。消掉 406 ms，额外延迟约一个 RTT（5–50 ms），且保留 prime 旁路，不会把首声推迟 1 s。
-   - **P1（兜底，~1–1.5 天，配置开关）**：adapter 内 lead 队列，**目标 250–300 ms**（覆盖 400 ms 空档减去设备 ALSA 的 170 ms 后仍有余量），独立 task 按 42.667 ms 定速发送；队列空时补零保持流，避免 `eosPending` 被误消费导致重新 prime。首次出声约 **+250–300 ms**（保守可设 400 ms，则 +400 ms）。
+4. **当前实现（c766fcd）的问题**：
+   - **prebuffer 实际没生效**：`adapter.py:376` 用 `len(_frame_buffer) >= self._prebuffer * 2`，`_prebuffer` 是毫秒（450），右边只有 **900 B**；第一块 100 ms 就是 9600 B，所以第一块就把 `_stream_started` 置 true。应改为 `self._prebuffer * 2 * SPEAKER_RATE // 1000`（450 ms = 43200 B），或直接用 `PREBUFFER_BYTES`。
+   - **首声代价被低估**：no-op 让 1.024 s prime 重新生效；post-fix 设备日志 `primeWait=762–968 ms`。所以“+0.45 s”不成立，实际约 **+0.8–1.0 s**。
+   - **EOS 0.7 s 有拆流风险**：TTS 停顿 0.7–1.2 s 现在会被 `0x03` 切断并重新 prime；旧的 1.2 s 正是为这个场景选的。建议保留 1.2 s，或先确认 TTS 停顿 <0.7 s。
+5. **推荐**：
+   - **短期（最小）**：修 prebuffer 阈值；`EOS_IDLE_S` 回到 1.2；接受 ~1 s 首声，或做下面的低延迟版本。
+   - **低延迟（推荐，若首声 P50 重要）**：`stop_playback()` 保留 flush，但加控制面 ping/pong 屏障；修好 prebuffer（450 ms 真 lead）。这样 prime 被旁路，首声 ≈ 450 ms + 43 ms，且 450 ms lead 覆盖 400 ms 空档。代价是每次回复一个 RTT（5–50 ms）和 450 ms 预缓冲延迟，合计约 **+0.5 s**，比现状少 ~0.4–0.5 s。
+   - **P1 升级（可选）**：把“攒够就 burst”改成 42.667 ms 定速发送 + 空档补零；防止长空档把设备队列排空后重新 prime。单独 P1 不增加 lead，不能替代 prebuffer。
    - **P2（不推荐）**：`wait_consumed` / `reports_consumption`。当前固件没有可用的逐块播放头；即使补上，`Credit` 的语义是限制“领先多少”，不是保证“领先够多”，对空档无帮助。
-5. **不建议**：无脑把 `stop_playback()` 改成 idle no-op。它消掉 406 ms，但会让每轮重新走 1.024 s prime 门；短回复（<1.024 s 音频）甚至要等到 EOS（约 1.7 s）才出声。这个代价比 406 ms 更大。
-6. **验证**：先用单测 + 设备 `DOT2_INJECT_PORT` 注入固定 PCM 做 A/B（设备静音，只看 `underruns/minDepth/primeWait/recvSpan`），再在允许出声的窗口做人耳 A/B。验收：句中无 400 ms 空档、设备 `underruns=0`、首声延迟增加 ≤350 ms（P1 默认 300 ms）。
+6. **验证**：先修阈值并加单测（450 ms = 43200 B，不能第一块就放行）；再用现有 `dev/rui/playdump/calls.log` + 设备日志对比 `primeWait/minDepth/underruns`。验收：句中无 400 ms 空档、`underruns=0`、`primeWait` 与所选路径一致（no-op ≈1 s；屏障 ≈<100 ms），首声延迟符合预算。
 
 ---
 
 ## 1. 先把两类 400 ms 分开
 
-### 1.1 A 类：每轮开头的 flush 竞态（已定位，P0 解决）
+### 1.1 A 类：每轮开头的 flush 竞态（已由 `c766fcd` 的 idle no-op 消除）
 
-rui 在每轮回答第一块前调用 `adapter.stop_playback()`（`house-ear: src/house_ear/audio/process.py:1095-1108`）。我们的实现：
+rui 在每轮回答第一块前调用 `adapter.stop_playback()`（`house-ear: src/house_ear/audio/process.py:1095-1108`）。修复前我们的实现无条件发 flush：
 
 ```python
-# bridge: src/rui_dot2_bridge/adapter.py:414-423
+# 修复前（adapter.py:414-423）
 async def stop_playback(self, fade_ms: int = 120) -> None:
     ...
     self._playing = False
@@ -45,7 +50,7 @@ async def stop_playback(self, fade_ms: int = 120) -> None:
 - 4 个 period ≈ 171 ms，正好是 `calls.log` 里那两块 6 ms 连发的音频；
 - 随后设备进入 discard/重新开流，`calls.log` 在约 406 ms 后才继续 `play()`。
 
-同目录 `stutter-rui-xiaoai.md` 已给出 11/11 的证据和复现命令，这里不重复。
+`c766fcd` 改成“`_playing=False` 且本地 buffer 空 → 直接 return，不发 flush”。这消掉了 A 类（post-fix 设备日志不再有 11:11 前的 `periods=4` 切流），但代价见 §1.2：设备 prime 重新生效。同目录 `stutter-rui-xiaoai.md` 给出 11/11 的证据和复现命令。
 
 ### 1.2 B 类：句中 TTS 到达空档（本方案要兜底的对象）
 
@@ -59,33 +64,37 @@ MAX_LEAD_S = 0.32
 
 注意：**稳态目标是 250 ms，不是 320 ms**；320 ms 只是 `target` 的上限。`CATCHUP=1.0` 意味着当前版本不会随块增长 lead。实测 rui 日志里 `lead max` 约 343–344 ms，是突发瞬间的峰值。
 
-我们的 adapter 在 `play()` 里同步转发，没有任何按时间的 lead：
+当前实现（`c766fcd`）的意图是“先攒 0.45 s 再发”，但阈值写成了 `len(_frame_buffer) >= self._prebuffer * 2`：`_prebuffer=450`（ms）却按字节比较，阈值只有 **900 B**；第一块 100 ms 就是 **9600 B**，所以第一块立刻 `_stream_started=True`，prebuffer 从未生效。于是实际仍是“到达即转发”，设备侧 1.024 s prime 成了唯一的 lead：
 
 ```python
-# adapter.py:336-366
+# 当前 adapter.py:372-397（简化）
 self._frame_buffer.extend(pcm)
-await self._drain_frames()      # 只按 4096 B 切，不按时间发
-...
-# adapter.py:380-385
-while len(self._frame_buffer) >= SPEAKER_CHUNK_BYTES:
-    await self._link.send_pcm(...)
+if not self._stream_started:
+    if len(self._frame_buffer) >= self._prebuffer * 2:   # BUG: 900 B，不是 43200 B
+        self._stream_started = True
+    else:
+        ... 0.35 s 兜底 task ...
+        return
+await self._drain_frames()
 ```
 
-`send_pcm()` 也不排队，逐帧 `await conn.send()`（`device_link.py:420-428`）。因此 rui 的到达节奏 = 设备收到的节奏；`Pacer` 的 250 ms 就是“adapter 之外”的全部余量。
+post-fix 设备日志（03:11 UTC，3 条）正是这个形态：`primeWait=762/940/968 ms, minDepth=7, underruns=0, maxGap=697–701 ms`。也就是说，400 ms 空档是被 **prime 的 1.024 s 缓冲**吸收的，首声等了 0.76–0.97 s；prebuffer 没有参与。
 
-如果某次 TTS 在句中停 400 ms，设备队列会先被消耗；排空后固件的行为取决于 `eosPending` 标志（见 §2.3）。在当前“每轮开头 flush”的路径下，`eosPending` 通常是 **true**：排空会被 `drained()` 当成“自然结束”，`playing` 置 false，下一块音频必须重新满足 24 period（1.024 s）或 EOS 才能播。也就是说：
+`send_pcm()` 也不排队，逐帧 `await conn.send()`（`device_link.py:420-428`）。在阈值修好之前，rui 的到达节奏 = 设备收到的节奏；修好之后，adapter 会在本地攒 450 ms，再一次性/定速下发。
 
-> **400 ms 的源空档，可能被固件的“误判自然结束 + 重新 prime”放大成约 1.0–1.4 s 的停顿。**
+排空行为：no-op 版本里 `eosPending` 通常是 **false**，所以队列排空时 `drained()` 记的是 **underrun**（不是自然结束），`playing` 置 false；下一块音频仍要重新满足 24 period（1.024 s）或 EOS 才能播。也就是说：
 
-这解释了为什么长回复里同样的 400 ms 到达空档可以 `underruns=0`（队列里还有 15–20 个 period），而短回复/刚开流时同一空档会明显“卡”。
+> **只要空档长到把当前 lead 耗尽，下一段仍会重新 prime 1.024 s；400 ms 只是被 1 s prime 吸收，不是被 adapter 缓冲消除。**
+
+这解释了为什么长回复里 400 ms 到达空档可以 `underruns=0`（prime 后队列还有约 1 s），而短回复/刚开流时同一空档会明显“卡”。
 
 ### 1.3 对“320 ms 不够”说法的修正
 
 - rui 实际稳态 lead ≈ 250 ms；
-- 设备 ALSA 环 ≈ 170.7 ms；
-- 合计约 **421 ms**，理论上刚好覆盖 400 ms，几乎没有余量（调度抖动、USB/WiFi、period 对齐都会吃掉几毫秒到几十毫秒）；
-- 如果 prime 被绕过（首声很快），这 421 ms 就是全部；如果没有被绕过，prime 会额外给约 1 s，但短回复会等 EOS。
-- 所以“400 ms 空档”既可表现为短回复的 200–400 ms 空洞，也可表现为“误判结束 + prime”的 1 s 级停顿；两者要用不同层面的手段：**屏障/状态机** 解决前者，**lead + 补零** 解决后者。
+- no-op 版本里设备 prime 额外给约 **1.024 s**（首声代价 0.76–0.97 s）；两者不是相加关系，prime 是起始缓冲，之后按到达 1x 维持；
+- 如果 prime 被屏障旁路（低延迟路径），lead = adapter prebuffer（目标 450 ms）+ 设备 ALSA 170.7 ms ≈ **621 ms**；覆盖 400 ms 有约 220 ms 余量；
+- 如果 prebuffer 阈值继续是 bug（实际 0 缓冲），lead 只剩设备 ALSA+当前队列，400 ms 空档就可能饿死；
+- 所以“400 ms 空档”在不同路径下表现不同：**no-op ≈ 1 s prime 吸收**；**屏障/旁路 + 真 prebuffer ≈ 450 ms lead 吸收**；**阈值 bug + 旁路 = 没有 lead，容易听出来**。三者要用不同手段：**修阈值**、**决定是否保留 prime**、**必要时补零/定速**。
 
 ---
 
@@ -95,12 +104,15 @@ while len(self._frame_buffer) >= SPEAKER_CHUNK_BYTES:
 
 | 函数 | 行为 | 关键点 |
 |---|---|---|
-| `Dot2Adapter.play()` `adapter.py:336-366` | 校验 48 kHz mono；首块 `reset_stream()`；响度处理；追加 `_frame_buffer`；`await _drain_frames()`；置 `_playing=True`；重置 EOS idle | 同步、无队列、无时间节奏 |
-| `_drain_frames()` `adapter.py:380-385` | 每凑满 4096 B 就 `send_pcm()`，循环到不足一帧 | 一次 `play()`（100 ms = 9600 B）会发 2 个整帧 + 留 1408 B；下一块补齐 |
-| `_eos_after_idle()` `adapter.py:387-412` | 1.2 s 无新块：把不足一帧的尾巴 10 ms 淡出、补零到 4096 B，发 `0x03` | 1.2 s 是经验值；设备约 213 ms 的尾部还在响，不会切掉 |
-| `stop_playback()` `adapter.py:414-423` | 取消 EOS、清本地 buffer、`link.flush()` | **`fade_ms` 参数未使用**；不发 EOS；不等待设备确认 |
+| `Dot2Adapter.play()` `adapter.py:343-387` | 校验 48 kHz mono；首块 `reset_stream()`；响度处理；追加 `_frame_buffer`；未开始时判断阈值/启动 0.35 s 兜底 task；已开始则 `_drain_frames()` | 阈值 **有单位 bug**（见下）；`_playing=True` 在返回前就置位，所以 prebuffer 期间 `stop_playback` 会走“非 idle”分支 |
+| `_start_after_prebuffer()` `adapter.py:389-397` | 0.35 s 后若还没开始且有数据，置 `_stream_started=True` 并 drain | 短回复的兜底；**不会取消已在跑的 task**（靠 `_stream_started` 早退） |
+| `_drain_frames()` `adapter.py:411-420` | 未开始直接 return；否则每凑满 4096 B 就 `send_pcm()` | 一次 `play()`（100 ms = 9600 B）现在通常发 2 个整帧 + 留 1408 B |
+| `_eos_after_idle()` `adapter.py:423-447` | **0.7 s** 无新块：把不满一帧的尾巴 10 ms 淡出、补零到 4096 B，发 `0x03` | 0.7 s 是 `c766fcd` 从 1.2 s 降下来的；**TTS 停顿 0.7–1.2 s 会被拆流重新 prime** |
+| `stop_playback()` `adapter.py:449-477` | 取消 EOS/prebuffer task；idle（`not _playing and not _frame_buffer`）直接 return；否则清 buffer、`link.flush()` | idle no-op 是 A 类修复；非 idle 仍只 flush、不发 EOS、不等确认 |
 | `send_pcm()` `device_link.py:420-428` | `split_playback()` 后逐帧 `send`，持 `_send_lock` | 无出站队列；`AUDIO_QUEUE_CHUNKS=64` 只是**上行麦克风**队列 |
 | `end_stream()` / `flush()` `device_link.py:430-439` | 发 `0x03` / `speaker_flush`（control） | 都不等设备 ack |
+
+**prebuffer 阈值 bug**：`adapter.py:376` 是 `len(self._frame_buffer) >= self._prebuffer * 2`。`self._prebuffer` 来自 `DOT2_PREBUFFER_MS`，单位是 ms（默认 450）；右边 `450*2=900`，被当作字节。正确阈值是 `450 ms × 48000 × 2 B = 43200 B`（`PREBUFFER_BYTES` 已定义但没被用在这个判断里）。所以第一块 9600 B 就超过 900 B，prebuffer 直接放行。
 
 `frames.py` 的线上事实：`SPEAKER_CHUNK_BYTES=4096`，48 kHz mono S16 = **42.667 ms/帧**（`frames.py:29-33, 58-65`）。4096 B = 2048 mono samples；设备 `toStereo()` 后是 8192 B = 2048 stereo frames，正好一个 ALSA period。
 
@@ -165,22 +177,23 @@ async def wait_consumed(self, since: int, timeout: float) -> int:
 - `underruns>0` 的 9 条流，`maxGap` 都在 **1.1–1.3 s**，即 TTS 停顿超过 `EOS_IDLE_S=1.2` 后被拆流/重新 prime 的那一类；这与 `docs/findings.md:63-75` 的结论一致。
 - `primeWait` 呈双峰：94 条长流 `<100 ms`（prime 被绕过），26 条 750–999 ms、8 条 1.0–1.25 s（prime 正常）。这既证明 flush 旁路确实在发生，也证明一旦走正常 prime，首声要等约 1 s。
 - 设备日志里 `voice stream complete (periods=4 … recvSpan=5ms)` 与 `speaker_flush received` 同秒出现，是 A 类 406 ms 的直接证据；此时 `periods=4` 就是被 flush 丢掉的前两块。
+- **post-fix（03:11 UTC，`c766fcd` 之后）**：`primeWait=762/940/968 ms, minDepth=7, underruns=0, maxGap=697–701 ms`。这证明 no-op 后 prime 正常生效，400 ms 空档被 prime 缓冲吸收；也证明首声代价是 **~0.8–1.0 s**，不是 0.45 s。`maxGap≈700 ms` 正好是新的 `EOS_IDLE_S=0.7` 尾巴，说明当前流在最后一次音频后 0.7 s 收流。
 
-> 因此：**A 类（开头竞态）用 P0 屏障解决；B 类（句中 TTS 空档）在 prime 正常时本来就被设备队列吸收，真正危险的是“flush 旁路后队列排空被误判为结束 → 重新 prime”。P1 的 lead + 补零就是防止这个误判，同时在 TTS 真的断供时提供余量。**
+> 因此：**A 类（开头竞态）已由 idle no-op 解决；B 类（句中 TTS 空档）在 no-op 版本里主要被 1.024 s prime 吸收，代价是首声 ~1 s。真正的风险是“空档长到把 prime 缓冲耗尽 → underrun → 下一段重新 prime”。prebuffer/lead + 补零是把这个风险变成可控余量；单独靠 no-op 只是把 400 ms 换成 1 s 首声。**
 
 ---
 
 ## 3. 方案对比
 
-评分针对 **B 类句中空档**（A 类已由 P0 解决）；延迟指“首声”增加。
+评分针对 **B 类句中空档**（A 类已由 idle no-op 解决）；延迟指“首声”增加。
 
 | 方案 | 能否消除 400 ms | 额外延迟 | 对打断/停播 | 实现复杂度 | 主要风险 |
 |---|---|---|---|---|---|
-| **(a) 播放预缓冲**：首块后攒 400–600 ms 再下发 | 能覆盖**不超过目标**的空档；超过则仍会断 | +400–600 ms（每个回复） | `stop_playback` 丢弃本地缓冲即可；设备 flush 仍切断设备队列 | 低–中（状态 + 队列；若同步阻塞 rui 则高） | 短回复被拖慢；连续多次长空档会耗尽；不解决 `eosPending` 误判 |
+| **(a) 播放预缓冲**：首块后攒 400–600 ms 再下发 | 能覆盖**不超过目标**的空档；超过则仍会断 | +400–600 ms（每个回复） | `stop_playback` 丢弃本地缓冲即可；设备 flush 仍切断设备队列 | 低–中（状态 + 队列；若同步阻塞 rui 则高） | 短回复被拖慢；连续多次长空档会耗尽；**当前实现阈值有单位 bug，实际 0 缓冲** |
 | **(b) 实现 `wait_consumed`** | **不能** | 0 | 无直接帮助 | 高（固件 + 协议 + adapter 映射） | v2.18.1 没有播放头；`Credit` 只限“在途”，窗口 8 反而可能减少 lead；控制面进度还会被 flush/数据竞争影响 |
-| **(c) 自建队列 + 42.7 ms 定速（空档补零/保持流）** | **单独不能**（补零不产生语音）；但能防止“排空被误判结束 → 1 s prime”，把放大后的 1 s 停顿压回源空档 | 单独 +0；若加 lead 目标则 +目标 | 停播要 cancel task + 清队列 + flush；补零会延后后续音频但保持时间线 | 中（task、EOS、竞态、测试） | 补零可能掩盖 underrun 诊断；发送 task 与 stop/EOS 竞态；调度抖动 |
-| **(a)+(c) 组合** | 能覆盖 ≤ 目标的源空档；超过目标时退化为“干净的空档 + 不重新 prime” | +250–300 ms（推荐）；保守 400 ms | 停播清队列 + flush；设备尾部 ~213 ms 仍会响（与现在同） | 中（~120–180 行 + 测试） | 同 (a)/(c)；需灰度开关 |
-| **(d) 删掉/空闲 no-op flush，恢复设备 prime** | 对 400 ms 空档有效，但… | **+0.7–1.2 s；短回复等到 EOS ≈ +1.7 s** | 不改变打断逻辑 | 最低（几行） | 首声严重回退；短回复不可接受；不建议单独使用 |
+| **(c) 自建队列 + 42.7 ms 定速（空档补零/保持流）** | **单独不能**（补零不产生语音）；但能防止“排空 → underrun → 1 s prime”，把放大后的停顿压回源空档 | 单独 +0；若加 lead 目标则 +目标 | 停播要 cancel task + 清队列 + flush；补零会延后后续音频但保持时间线 | 中（task、EOS、竞态、测试） | 补零可能掩盖 underrun 诊断；发送 task 与 stop/EOS 竞态；调度抖动 |
+| **(a)+(c) 组合** | 能覆盖 ≤ 目标的源空档；超过目标时退化为“干净的空档 + 不重新 prime” | +300–450 ms（推荐 450 ms）；保守 500 ms | 停播清队列 + flush；设备尾部 ~213 ms 仍会响（与现在同） | 中（~120–180 行 + 测试） | 同 (a)/(c)；需灰度开关 |
+| **(d) idle no-op，恢复设备 prime**（当前实现） | 对 400 ms 空档有效 | **+0.76–0.97 s（primeWait 实测）** | 不改变打断逻辑 | 最低（几行） | 首声回退；TTS 停顿 0.7 s 以上会拆流；不建议仅此长期保留 |
 
 ### 3.1 (a) 播放预缓冲
 
@@ -204,27 +217,30 @@ async def wait_consumed(self, since: int, timeout: float) -> int:
 
 ### 3.3 (c) 队列 + 42.7 ms 定速 + 空档补零
 
-- **单独使用**：队列只做“到达即入、每 42.667 ms 出一帧”，没有任何 lead；空档时补零保持流。它能把“设备排空 → 误判结束 → 1.024 s prime”变成“设备持续收到静音 → 流不重启”，但不能把 400 ms 的源空档变成语音。听感仍然是 400 ms 静音，只是不会变成 1.4 s。
+- **单独使用**：队列只做“到达即入、每 42.667 ms 出一帧”，没有任何 lead；空档时补零保持流。它能把“设备排空 → underrun → `playing=false` → 下一块等 24 period/1.024 s prime”变成“设备持续收到静音 → 流不重启”，但不能把 400 ms 的源空档变成语音。听感仍然是 400 ms 静音，只是不会变成 1.4 s。
 - **补零的副作用**：补零会占掉时间线，后续真实音频相应后移；如果下一块在 5 ms 后就到，最多多补 42.7 ms。相对“重新 prime 1 s”，这个代价可接受。补零应计入 `underrun_frames`，不能假装没有空档。
 - **与 (a) 组合**：lead 覆盖源空档；补零兜住“超过 lead”的极端情况，避免二次放大。这是推荐形态。
 - **复杂度**：一个 `asyncio.Task` + `deque` + `Event`；`stop_playback` 用 generation 取消旧 task；EOS 由 task 在“队列空 + 1.2 s 无新数据”时发；测试要覆盖 stop/EOS 竞态。
 
-### 3.4 (d) 为什么“删掉 flush”不是答案
+### 3.4 (d) 当前实现：idle no-op + 名义 0.45 s prebuffer
 
-这是工作区里已经存在的一个未提交改动（`stop_playback` 在 `_playing=False` 且 `_frame_buffer` 空时直接 return）。它确实能消掉 A 类 406 ms，但：
+`c766fcd` 已经落地：`stop_playback()` 在 `_playing=False` 且 `_frame_buffer` 空时直接 return（A 类消失），并加了 `DOT2_PREBUFFER_MS=450`、0.35 s 兜底、`EOS_IDLE_S=0.7`。实际效果：
 
-- 删掉 flush 后，设备不会收到 `eosPending=true`，新流要等 **24 period = 1.024 s**（或 EOS）才开声；
-- rui 的 `Pacer` 只领先 250 ms，24 period 要等约 1 s 才凑齐；
-- 短回复（音频 <1.024 s）永远凑不齐 24 period，只能等 adapter 在最后一块后 1.2 s 发 EOS，首声约 **1.7 s** 后；
-- 设备日志里 `primeWait=2330ms / 1232ms` 的短流就是这类等待的现成证据。
+- **A 类确实消失**：post-fix 设备日志不再有每轮开头 `periods=4` 的切流。
+- **no flush → `eosPending=false`**：新流必须等 **24 period = 1.024 s**（或 EOS）才开声；post-fix `primeWait=762–968 ms` 实测。
+- **短回复**：音频 <1.024 s 时永远凑不齐 24 period，只能等 adapter 在最后一块后 `EOS_IDLE_S` 发 EOS；按 0.7 s 算是约 1.2 s 后，按 1.2 s 算是约 1.7 s 后。设备日志里 `primeWait=2330ms / 1232ms` 的短流就是这类等待的证据。
+- **0.45 s prebuffer 实际没生效**：阈值 900 B（见 §2.1），所以“prebuffer 吸收空档”这条并不成立；空档是被 1.024 s prime 吸收的。
+- **EOS 0.7 s**：TTS 停顿 0.7–1.2 s 会被拆流并重新 prime；旧 1.2 s 正是为这个选的。
 
-因此：**要么保留 flush 但让它有序（P0 屏障），要么改固件把 prime 旁路拆成独立标志；不能只删 flush。** 如果实测表明该设备的 prime 实际远小于 1.024 s（例如旧固件/不同配置），no-op 仍可作为最简方案；但按本仓库 v2.18.1 源码，代价如上一段所述。
+结论：**no-op 可以作为“先消掉 A 类”的最小修复保留，但不要宣称 +0.45 s 成本，也不要指望现有 prebuffer。** 若要低延迟，见 §4.1 的屏障 + 真 prebuffer；若要最简，保留 no-op 并把 `EOS_IDLE_S` 调回 1.2，接受 ~1 s 首声。
 
 ---
 
 ## 4. 推荐方案
 
-### 4.1 P0：flush + 控制面屏障（先做，消掉 A 类）
+### 4.1 P0b（可选，低延迟路径）：flush + 控制面屏障
+
+**这是可选的延迟优化，不是“还没做所以必做”。** 现状（idle no-op）已经消掉 A 类，代价是 primeWait ~0.8–1.0 s。P0b 用“保留 flush 但加屏障”来换回 ~0.5 s 首声：prime 被旁路，首声由 prebuffer + 一个 RTT 决定。
 
 目标：保持 `eosPending` 旁路（首声快），同时保证 flush 先于首帧 PCM 被设备处理。
 
@@ -261,26 +277,30 @@ else:
 
 > 如果不想加屏障，退而求其次是在 flush 后 `await asyncio.sleep(0.05-0.1)` 再放首帧；这没有协议保证，只是经验值，不如 ping/pong。
 
-### 4.2 P1：lead 队列 + 42.667 ms 定速 + 补零（配置开关，兜底 B 类）
+### 4.2 P1：修好现有 prebuffer + 42.667 ms 定速 + 补零（配置开关，兜底 B 类）
+
+现状是“名义 450 ms、实际 0 ms”。第一步不是加新层，而是**把阈值修对**；第二步再决定是否保留 450 ms、是否加定速/补零。
 
 参数建议：
 
 | 参数 | 建议值 | 理由 |
 |---|---:|---|
-| `DOT2_PLAYBACK_LEAD_MS` | **300**（默认）；可设 250/400 | 300 + 设备 ALSA 170.7 ≈ 471 ms；覆盖 400 ms 空档有 ~71 ms 余量。250 只剩 ~21 ms，偏紧；400 是保守值，+400 ms 延迟 |
-| `LEAD_MAX_WAIT_MS` | 400–500 | 短回复不能为凑目标无限等 |
+| `DOT2_PREBUFFER_MS` | **450**（保持当前意图）；可设 300 | 450 + 设备 ALSA 170.7 ≈ 621 ms；覆盖 400 ms 有 ~220 ms 余量。300 也够（471 ms），但当前代码/环境已写 450，先按 450 验证 |
+| `PREBUFFER_START_S` | 0.35 | 短回复永远凑不到 450 ms 时，0.35 s 后按现有数据开声 |
 | `FRAME_MS` | **42.667** | 与设备 period 对齐；用绝对 deadline 累加，避免 drift |
-| `EOS_IDLE_S` | 保持 1.2 | 设备尾部 ~213 ms，1.2 s 足够；改大只会拖慢音乐恢复 |
-| `PAD_ON_EMPTY` | **开** | 防止 `eosPending` 在排空时被误消费，导致重新 prime；计入 `underrun_frames` |
+| `EOS_IDLE_S` | **1.2**（建议从 0.7 调回） | 设备尾部 ~213 ms；0.7 s 会把 0.7–1.2 s 的 TTS 停顿拆流，重新 prime 1 s |
+| `PAD_ON_EMPTY` | **可选，先关** | 防止空档排空后 `playing=false` 再 prime；但补零会掩盖 underrun，先观测再开 |
 
-为什么目标不是 400–600 ms：设备 ALSA 环的 170.7 ms 也是“已交给硬件、尚未播出”的缓冲，属于同一笔余量。我们只需要补足 `400 - 170 ≈ 230 ms`，再加 50–100 ms 抖动余量 → 300 ms。若现场测量发现 ALSA 实际更浅（或设备换固件），再把默认调到 400。
+为什么目标不是 400–600 ms：设备 ALSA 环的 170.7 ms 也是“已交给硬件、尚未播出”的缓冲，属于同一笔余量。补足 `400 - 170 ≈ 230 ms`，再加 100–200 ms 抖动余量 → 350–450 ms。450 是保守且与当前配置一致的值。
 
-首次出声延迟：lead 300 ms + 一个 period 42.7 ms ≈ **+343 ms**（不把 ALSA 环算作首声延迟；它主要增加稳态余量）。保守 400 ms 则 +443 ms。
+首次出声延迟：prebuffer 450 ms + 一个 period 42.7 ms ≈ **+493 ms**（不把 ALSA 环算作首声延迟；它主要增加稳态余量）。300 ms 则 +343 ms。
+
+**注意**：修复阈值后，若仍走 no-op（prime 正常），设备 prime 1.024 s 会主导首声，prebuffer 不会让首声变快；450 ms prebuffer 只增加 lead。要真正把首声压到 ~0.5 s，必须同时用 §4.1 的屏障旁路 prime。两条路径二选一，别混着评估。
 
 ### 4.3 不推荐 / 后续
 
 - **不推荐 (b)**：没有设备播放头；`Credit` 不是“增加缓冲”的工具。
-- **(d) 只作为临时实验**，不能作为最终修复；若要用，必须同时把设备 `primePeriods` 降到 8–12 或新增 `startNow` 标志。
+- **(d) 当前 no-op 可以保留**：它是最小、已验证能消掉 A 类的修复；但不要长期单独依赖它（首声 ~1 s，且 0.7 s EOS 有拆流风险）。若要低延迟，做 §4.1 屏障 + §4.2 真 prebuffer；否则至少把 `EOS_IDLE_S` 调回 1.2。
 - **长期（设备侧，单独排期）**：把 `primePeriods` 做成可配（或 8–12），并把 `eosPending` 拆成 `eosPending` + `startNow`；这样 adapter 不再需要靠 flush 来旁路 prime，P0/P1 都可以简化。
 
 ---
@@ -314,7 +334,7 @@ def _on_pong(self, message):
             fut.set_result(None)
 ```
 
-### 5.2 P0：`Dot2Adapter.stop_playback`
+### 5.2 P0b：`Dot2Adapter.stop_playback`（替换当前 idle no-op）
 
 ```python
 async def stop_playback(self, fade_ms: int = 120) -> None:
@@ -327,7 +347,7 @@ async def stop_playback(self, fade_ms: int = 120) -> None:
         await self._link.flush()
         await self._link.end_stream()
     else:
-        await self._link.flush()
+        await self._link.flush()          # 关键：idle 也要 flush，arm eosPending
     await self._link.control_barrier()
     self._playing = False
     self._frame_buffer.clear()
@@ -336,9 +356,11 @@ async def stop_playback(self, fade_ms: int = 120) -> None:
 
 注意：`flush()` 已经把 `eosPending` 置 true；`end_stream()` 只负责在 `active` 时清掉 `discarding`，不会再改 `eosPending`。所以 `flush → EOS → 屏障` 就够了，不需要第二次 flush。若未来固件把 `eosPending` 语义拆开，这一段可以简化。
 
-### 5.3 P1：`PlaybackSender` 状态机
+**这是低延迟路径，不是现状。** 现状是 idle 直接 return；要采用本节，必须同时接受“每次回复多一个 RTT”和“flush 必须在首帧前被确认”的约束。上线前用 §6.3 的 A/B 对比 `primeWait`（应回到 <100 ms）和首声延迟。
 
-状态：`IDLE → BUFFERING → PLAYING → DRAINING → IDLE`；`_gen` 每次 stop/新流递增，旧 task 看到 `gen` 不匹配就退出。
+### 5.3 P1：在现有 prebuffer 上补 `PlaybackSender` 状态机
+
+现状已经有 `_stream_started/_prebuffer_task` 的雏形；最小改动是修阈值，再决定要不要把“攒够就 drain”升级为定速 task。若升级，状态为 `IDLE → BUFFERING → PLAYING → DRAINING → IDLE`；`_gen` 每次 stop/新流递增，旧 task 看到 `gen` 不匹配就退出。
 
 ```text
 play(pcm):
@@ -349,7 +371,7 @@ play(pcm):
 sender(gen):
     while gen == self._gen:
         if state == BUFFERING:
-            if q.ms >= LEAD_MS or now - t0 >= MAX_WAIT:
+            if q.ms >= PREBUFFER_MS or now - t0 >= PREBUFFER_START_S:
                 state = PLAYING; deadline = now
             else:
                 await event.wait(timeout=small); continue
@@ -357,10 +379,11 @@ sender(gen):
             if q.empty():
                 if now - last_enqueue >= EOS_IDLE:
                     send padded tail; link.end_stream(); state = IDLE; return
-                send one zero frame            # 保持流，防 eosPending 被误消费
-                underrun_frames += 1
-                deadline += FRAME
-                await sleep_until(deadline); continue
+                if PAD_ON_EMPTY:
+                    send one zero frame; underrun_frames += 1
+                    deadline += FRAME
+                    await sleep_until(deadline); continue
+                await event.wait(timeout=small); continue
             frame = q.pop_frame()              # 4096 B
             await link.send_pcm(frame)
             deadline += FRAME
@@ -391,30 +414,31 @@ sender(gen):
 
 用 `tests/test_adapter.py` 的 `FakeLink` 扩展一个记录 `time.monotonic()` 的 `send_pcm`：
 
-1. **定速**：喂 10 块 100 ms 音频（9400/9600 B），断言相邻 `send_pcm` 的时间差 `42.667 ± 10 ms`；不能一次 burst。
-2. **空档覆盖**：喂 `5×100 ms → 400 ms 空档 → 5×100 ms`；`LEAD_MS=300` 时断言空档期间没有 `underrun_frames`；`LEAD_MS=0` 时断言至少出现一次补零，且不会触发 `end_stream`（模拟 `eosPending` 误判）。
-3. **首声延迟**：断言 `play_start_delay_ms ≤ LEAD_MAX_WAIT + 50`。
-4. **stop**：在 BUFFERING/PLAYING 两种状态调用 `stop_playback`，断言旧 task 退出、无后续帧、flush/EOS/屏障顺序正确（用事件列表）。
-5. **EOS**：最后一块后 1.2 s 发 EOS；尾部补零到 4096 B；不会在队列还有音频时提前 EOS。
-6. **屏障**：FakeLink 的 `control_barrier` 可立即返回；另写一个超时用例，断言超时后仍继续（只告警）。
+1. **阈值单位**：`play(9600 B)` 后断言 `_stream_started is False`（450 ms 需要 43200 B）；喂满 43200 B 后才 `True`。这一条能直接抓住当前的 900 B bug。
+2. **定速**：喂 10 块 100 ms 音频（9400/9600 B），断言相邻 `send_pcm` 的时间差 `42.667 ± 10 ms`；不能一次 burst。
+3. **空档覆盖**：喂 `5×100 ms → 400 ms 空档 → 5×100 ms`；`PREBUFFER_MS=450` 时断言空档期间没有 `underrun_frames`；`PREBUFFER_MS=0` 时断言至少出现一次补零/underrun，且不会触发 `end_stream`。
+4. **首声延迟**：断言 `play_start_delay_ms ≤ PREBUFFER_START_S*1000 + 50`（对短回复）或 ≤450+50（对长回复）。
+5. **stop**：在 BUFFERING/PLAYING 两种状态调用 `stop_playback`，断言旧 task 退出、无后续帧、flush/EOS/屏障顺序正确（用事件列表）；idle 时按所选路径断言“no flush”或“flush+屏障”。
+6. **EOS**：最后一块后 `EOS_IDLE_S` 发 EOS；尾部补零到 4096 B；不会在队列还有音频时提前 EOS。
+7. **屏障**：FakeLink 的 `control_barrier` 可立即返回；另写一个超时用例，断言超时后仍继续（只告警）。
 
 ### 6.2 离线回放（用已有 `calls.log`）
 
-写一个纯函数 `simulate(arrivals, lead_ms)`（不碰设备）：
+写一个纯函数 `simulate(arrivals, prebuffer_ms)`（不碰设备）：
 
 - 输入：`calls.log` 的 `(timestamp, bytes)`；用 1.0 s 间隔切流；
 - 输出：`start_delay`、`underrun_frames`、`max_send_gap`；
-- 对 A 类开头的 406 ms，P0 后应消失，不应计入 B 类；对 B 类，把 406 ms 当作“句中空档”做敏感性分析（例如人为把 gap 移到第 5 块后）；
-- 验收：`lead=300` 时，400 ms 空档的模拟 underrun 为 0；`lead=0` 时 >0；`lead=400` 时余量更大但延迟 +100 ms。
+- 对 A 类开头的 406 ms，no-op 后应消失，不应计入 B 类；对 B 类，把 406 ms 当作“句中空档”做敏感性分析（例如人为把 gap 移到第 5 块后）；
+- 验收：`prebuffer=450` 时，400 ms 空档的模拟 underrun 为 0；`prebuffer=0` 时 >0；`prebuffer=450` 比 300 多 ~150 ms 首声延迟，但余量更大。
 
-> 注意：现有 `calls.log` 的 406 ms 主要是 A 类，不是 B 类的真实样本；不能拿它直接证明 P1 在线上有效，只能做“如果空档发生在句中”的敏感性验证。
+> 注意：现有 `calls.log` 的 406 ms 主要是 A 类，不是 B 类的真实样本；不能拿它直接证明 P1 在线上有效，只能做“如果空档发生在句中”的敏感性验证。post-fix 的 `dev/rui/playdump/calls.log` 仍有一条 406 ms 到达空档（11:11:34），但设备 `maxGap≈700 ms / underruns=0` 说明它被 prime 吸收了——这正是“源空档仍在，但被缓冲隐藏”的样本。
 
 ### 6.3 设备 A/B（静音下可做，只看统计）
 
 设备当前故意静音（level 0/127），**不要改音量**；静音不影响 `PumpPeriod`、period 计数和 underrun 统计。
 
 1. 生成一个 48 kHz mono WAV：3 段语音/音调，段间在**发送侧**人为留 400 ms（不是文件里的静音，而是分 3 次 `play()` 调用，中间 sleep 400 ms）。
-2. 通过 `DOT2_INJECT_PORT=8871` 的 loopback hook 注入：`python -m rui_dot2_bridge.inject_cli --wav ...`；分别用 `DOT2_PLAYBACK_LEAD_MS=0` 和 `300` 跑。
+2. 通过 `DOT2_INJECT_PORT=8871` 的 loopback hook 注入：`python -m rui_dot2_bridge.inject_cli --wav ...`；分别用 `DOT2_PREBUFFER_MS=0` 和 `450` 跑。若要 A/B P0b，再各跑一次“idle no-op” vs “flush+屏障”。
 3. 每次跑完读设备日志：
 
 ```bash
@@ -423,16 +447,17 @@ adb -s G090LF0964340RN6 shell su -c 'cat /tmp/server.log' | grep 'voice stream c
 ```
 
 验收：
-- `LEAD=300`：`underruns=0`，`minDepth` 不低于 ~5，且没有因空档产生的第二条 `voice stream complete`；
-- `LEAD=0`：应能看到与空档对应的 `minDepth=0`/`UNDERRUN`（或流被拆），作为对照；
-- `primeWait` 不应出现 1 s 级的异常跳变（说明没有重新 prime）。
+- `PREBUFFER_MS=450` + no-op：`underruns=0`，`primeWait≈0.8–1.0 s`（prime 正常），`minDepth>0`；
+- `PREBUFFER_MS=450` + P0b 屏障：`underruns=0`，`primeWait<100 ms`（prime 旁路），首声明显更早；
+- `PREBUFFER_MS=0`：应能看到与空档对应的 `minDepth=0`/`UNDERRUN`（或流被拆），作为对照；
+- 若任何一组出现 `maxGap≈700 ms` 且紧接着一条新流，说明 EOS 0.7 拆流了，把 `EOS_IDLE_S` 调回 1.2 再测。
 
-4. 用 `adb shell` 看 `speaker_flush received` 的时间与首帧时间，确认 P0 后 flush 不再落在前两块之后。
+4. 用 `adb shell` 看 `speaker_flush received` 的时间与首帧时间，确认所选路径（no-op vs 屏障）没有 flush 落在前两块之后。
 
 ### 6.4 人耳 A/B（需要允许出声的窗口；本次不做）
 
-- 10 次同一句长回复，P0+P1 开/关各 5 次（顺序打乱）；
-- 记录“说完→出声”P50/P90，验收 P1 增加 ≤300 ms（若设 300 ms）；
+- 10 次同一句长回复，`PREBUFFER_MS=450` + no-op 与 + P0b 屏障各 5 次（顺序打乱）；
+- 记录“说完→出声”P50/P90，验收：no-op 约 +0.8–1.0 s，P0b 约 +0.5 s；不得比现状更差；
 - 记录句中卡顿次数；验收 0 次；
 - 设备日志验收 `underruns=0`、无异常 `primeWait`、无 1-period 幽灵流。
 

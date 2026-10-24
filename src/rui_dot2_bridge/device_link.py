@@ -121,6 +121,7 @@ class DeviceLink:
         self._ping_task: asyncio.Task[None] | None = None
         self._ping_seq = 0
         self._pong_waiters: dict[int, float] = {}
+        self._pong_events: dict[int, asyncio.Event] = {}
         # Target level (ours), not "whatever the device last reported". The two were
         # one variable, and a stale volume_state from before the connect push (the
         # device reports its old 38 after we send 89) overwrote the target and then
@@ -356,6 +357,9 @@ class DeviceLink:
         sent_at = self._pong_waiters.pop(ping_id, None)
         if sent_at is not None:
             self.stats.rtt_ms = round((time.monotonic() - sent_at) * 1000.0, 1)
+        event = self._pong_events.get(ping_id)
+        if event is not None:
+            event.set()
 
     # ------------------------------------------------------------------ data
     async def _serve_data(self, conn: ServerConnection) -> None:
@@ -435,8 +439,36 @@ class DeviceLink:
             await conn.send(speaker_eos())
 
     async def flush(self) -> None:
-        """Discard audio the device has already buffered (barge-in)."""
+        """Discard buffered playback, then wait until the device has seen it.
+
+        speaker_flush travels on /control while PCM travels on /data - two TCP
+        connections with no cross-connection ordering, so the device could accept
+        the next reply's first blocks before the flush and then throw them away
+        (the 406 ms hole, 2026-10-24). The ping rides the same /control socket,
+        the device answers pings immediately and in order, so a pong proves the
+        flush was applied. Keep sending the flush: it also opens the device's
+        prime bypass; skipping it makes every reply wait the 1.024 s prime gate.
+        """
         await self._send_control({"type": "speaker_flush"})
+        await self._barrier()
+
+    async def _barrier(self, timeout: float = 0.8) -> bool:
+        """Send a ping and wait for its pong: orders /control against later sends."""
+        self._ping_seq += 1
+        ping_id = self._ping_seq
+        event = asyncio.Event()
+        self._pong_events[ping_id] = event
+        self._pong_waiters[ping_id] = time.monotonic()
+        try:
+            await self._send_control({"type": "ping", "id": ping_id})
+            await asyncio.wait_for(event.wait(), timeout)
+            return True
+        except (TimeoutError, ConnectionClosed):
+            log.warning("dot2 link: flush barrier timed out")
+            return False
+        finally:
+            self._pong_events.pop(ping_id, None)
+            self._pong_waiters.pop(ping_id, None)
 
     async def set_volume_level(self, level: int) -> None:
         self._volume_level = max(0, min(DEVICE_LEVEL_MAX, int(level)))
