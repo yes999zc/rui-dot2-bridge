@@ -17,6 +17,7 @@
 | 设备 AEC | 开（`[aec] enabled: frame=512 tail=64ms`）；rui 侧 AEC 因无参考关闭 |
 | 旧 EchoMuse controller | 容器保留、默认停止（接管时会推 85/127） |
 | 8 小时 soak | 10:44 起跑，每分钟一行 `dev/rui/soak.jsonl`（M1 第 6 项） |
+| 播放预缓冲 | **0.45 s**（`DOT2_PREBUFFER_MS`），用来吸收 rui 的 TTS 分片空档；回复延迟 +~0.45 s |
 
 ## 2. 2026-10-24 白天修掉的真问题
 
@@ -46,8 +47,8 @@
 
 ## 4. 已知但未闭环
 
-1. **播放 400 ms 空档** → [yes999zc/rui#1](https://github.com/yes999zc/rui/issues/1)（rui 侧）。
-   兜底方案：adapter 加 ~0.4 s 播放缓冲（延迟 +0.4 s，待定）。
+1. **播放 400 ms 空档** → [yes999zc/rui#1](https://github.com/yes999zc/rui/issues/1)
+   （adapter 侧已兜底：空闲 flush no-op + 0.45 s 预缓冲；rui 侧更优修法见 issue 跟进评论）。
 2. **P3 固件**（2ch 交出 AEC 参考）：已编译未安装（sha256 `876f63b4…`），A/B 槽可回滚，等 9 哥决定。
 3. **严格 G1**（20 次唤醒 ≥19）：修复后只有 7 次干净样本，可选补 13 次。
 4. **NAS 一次性部署**：等 M1 清单全绿（soak、plug.json、窗口）。
@@ -90,6 +91,7 @@ python scripts/soak_report.py
 | `DOT2_EQ_DIR` / `DOT2_LOUDNESS_*` | `artifacts/eq-prototype` / 开 | 响度处理与曲线目录 |
 | `DOT2_CONTROL_PORT` | 8872 | 响度调参 HTTP |
 | `DOT2_MUTE` | 未设 | 1 = 静音（上限 0） |
+| `DOT2_PREBUFFER_MS` | 450 | 播放预缓冲毫秒数（吸收 TTS 分片空档） |
 | `DOT2_AEC_ENABLED` | 1 | 0 仅用于声学回采测试 |
 
 ## 7. 安全/约束
