@@ -154,6 +154,7 @@ class Dot2Adapter(DeviceAdapter):
             "volume_cap_percent": self.volume_cap_percent,
             "push_config": push_config,
             "aec_enabled": aec_enabled,
+            "ref_uplink": self.ref_channels > 0,
             "oww_on_device": oww_on_device,
         }
         self._inject_port = inject_port

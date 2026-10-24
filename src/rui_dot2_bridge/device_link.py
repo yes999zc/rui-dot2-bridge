@@ -89,6 +89,7 @@ class DeviceLink:
         volume_cap_percent: float = VOLUME_CAP_PERCENT,
         push_config: bool = True,
         aec_enabled: bool = True,
+        ref_uplink: bool = False,
         mic_gain_db: int | None = None,
         oww_on_device: str = "off",
         on_button: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
@@ -102,6 +103,11 @@ class DeviceLink:
         self.volume_cap_percent = max(0.0, min(float(volume_cap_percent), 100.0))
         self.push_config = push_config
         self.aec_enabled = aec_enabled
+        # Advertise dot2_hw_ref so a patched firmware (v2.19.0-ea.1 + the
+        # echomuse-dot2-ref patch) sends [beam | de-aliased ch8 ref] instead of
+        # mono. The stock firmware ignores the feature, so this is safe before
+        # the patch is installed.
+        self.ref_uplink = ref_uplink
         # Fixed mic pre-gain (EchoMuse clampMicGainDb: 0..42). The device defaults
         # to +24 dB, which clips the Dot 2's mics on normal speech (peak 1.0000);
         # the controller can lower it in the config push.
@@ -410,8 +416,11 @@ class DeviceLink:
     # -------------------------------------------------------------- commands
     @property
     def controller_features(self) -> tuple[str, ...]:
-        """What this controller can do. Empty until a feature is actually implemented."""
-        return ()
+        """What this controller can do, announced in ``ack.features``."""
+        features: list[str] = []
+        if self.ref_uplink:
+            features.append("dot2_hw_ref")
+        return tuple(features)
 
     async def _send_control(self, message: dict[str, Any]) -> None:
         conn = self._control
