@@ -34,3 +34,4 @@ dev/rui*/config.last-good.yaml
 dev/rui*/audio*.sock
 dev/rui*/logs/
 artifacts/
+artifacts/eq-prototype/*.cfg
