@@ -176,7 +176,8 @@ class Dot2Adapter(DeviceAdapter):
         ) / 1000.0
         self._stream_started = False
         self._prebuffer_task: asyncio.Task | None = None
-        self._dump_dir = Path(os.environ.get("DOT2_PLAYBACK_DUMP") or "")
+        dump = os.environ.get("DOT2_PLAYBACK_DUMP", "").strip()
+        self._dump_dir = Path(dump) if dump else None
         self._dump_buf = bytearray()
         self._last_chunk_at: float | None = None
         self._inject_server: asyncio.base_events.Server | None = None
