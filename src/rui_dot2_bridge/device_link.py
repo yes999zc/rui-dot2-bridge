@@ -89,6 +89,7 @@ class DeviceLink:
         volume_cap_percent: float = VOLUME_CAP_PERCENT,
         push_config: bool = True,
         aec_enabled: bool = True,
+        mic_gain_db: int | None = None,
         oww_on_device: str = "off",
         on_button: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
@@ -101,6 +102,10 @@ class DeviceLink:
         self.volume_cap_percent = max(0.0, min(float(volume_cap_percent), 100.0))
         self.push_config = push_config
         self.aec_enabled = aec_enabled
+        # Fixed mic pre-gain (EchoMuse clampMicGainDb: 0..42). The device defaults
+        # to +24 dB, which clips the Dot 2's mics on normal speech (peak 1.0000);
+        # the controller can lower it in the config push.
+        self.mic_gain_db = mic_gain_db
         self.oww_on_device = oww_on_device
         self.on_button = on_button
 
@@ -276,6 +281,7 @@ class DeviceLink:
                     "owwOnDevice": self.oww_on_device,
                     "wakeWordEnabled": False,
                     "aecEnabled": self.aec_enabled,
+                    **({"micGainDb": self.mic_gain_db} if self.mic_gain_db is not None else {}),
                 }
             )
         await self._send_control({"type": "mic_start", "lock_mic": False})
