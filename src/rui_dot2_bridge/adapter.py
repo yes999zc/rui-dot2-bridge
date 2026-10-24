@@ -31,7 +31,7 @@ from house_ear.device.contract import (
 
 from .control import start_control_server
 from .device_link import DeviceLink
-from .dsp import LoudnessProcessor
+from .dsp import LoudnessProcessor, fade_out_pcm
 from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE
 from .volume import VOLUME_CAP_PERCENT, capped_level, clamp_percent
 
@@ -388,9 +388,13 @@ class Dot2Adapter(DeviceAdapter):
             return
         self._playing = False
         if self._frame_buffer:
-            # A short tail (a sentence ending mid-period): pad with silence so the
-            # device gets whole 42.7 ms periods, then close the stream.
-            tail = bytes(self._frame_buffer) + bytes(SPEAKER_CHUNK_BYTES - len(self._frame_buffer))
+            # Fade the last ~10 ms of the partial tail, then pad with silence so the
+            # device gets whole 42.7 ms periods. Holding the tail back (instead of
+            # sending it) was tried and reverted: EOS fires 1.2 s after the last
+            # chunk, so the held fragment would play after a 1.2 s hole.
+            tail = fade_out_pcm(bytes(self._frame_buffer))
+            if len(tail) < SPEAKER_CHUNK_BYTES:
+                tail += bytes(SPEAKER_CHUNK_BYTES - len(tail))
             self._frame_buffer.clear()
             await self._link.send_pcm(tail)
         await self._link.end_stream()

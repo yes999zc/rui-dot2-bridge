@@ -79,6 +79,21 @@ class LoudnessConfig:
         return LoudnessConfig.from_json(data)
 
 
+def fade_out_pcm(pcm: bytes, rate: int = 48000, ms: float = 10.0) -> bytes:
+    """Linear ramp to zero on the last ``ms`` of a PCM block (click-free stop).
+
+    The Dot 2 ends a 0x02 stream with whatever the last sample is; a non-zero
+    sample stepping to silence is audible as a small "tick" after the last word.
+    The processor's FIR/limiter delay (~16 ms) also means the natural tail is
+    cut, so the ramp has to be applied here rather than skipped as redundant.
+    """
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
+    ramp = min(len(samples), max(1, int(rate * ms / 1000.0)))
+    if ramp >= 2:
+        samples[-ramp:] *= np.linspace(1.0, 0.0, ramp)
+    return samples.astype("<i2").tobytes()
+
+
 def load_curves(directory: Path) -> dict[str, np.ndarray]:
     curves: dict[str, np.ndarray] = {}
     for name in CURVES:
