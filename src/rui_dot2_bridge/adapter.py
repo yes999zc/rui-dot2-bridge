@@ -18,6 +18,7 @@ import os
 import time
 import wave
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 
 from house_ear.device.contract import (
@@ -143,6 +144,11 @@ class Dot2Adapter(DeviceAdapter):
             "oww_on_device": oww_on_device,
         }
         self._inject_port = inject_port
+        # Debug: capture exactly what we hand to the device (DOT2_PLAYBACK_DUMP=dir).
+        # Used to tell a gap in our processed PCM from a stream split on the wire.
+        self._dump_dir = Path(os.environ.get("DOT2_PLAYBACK_DUMP") or "")
+        self._dump_buf = bytearray()
+        self._last_chunk_at: float | None = None
         self._inject_server: asyncio.base_events.Server | None = None
         # Loudness: stock EQ ladder + limiter, runtime-tunable over loopback HTTP.
         self._eq_dir = Path(os.environ.get("DOT2_EQ_DIR") or "artifacts/eq-prototype")
@@ -327,10 +333,31 @@ class Dot2Adapter(DeviceAdapter):
         # Stock EQ curve follows the device's current level; then EQ + limiter.
         self._loudness.set_level(self._link.volume_level)
         pcm = self._loudness.process_bytes(pcm)
+        if self._dump_dir:
+            now = time.monotonic()
+            gap_ms = 0.0 if self._last_chunk_at is None else (now - self._last_chunk_at) * 1000.0
+            self._last_chunk_at = now
+            with (self._dump_dir / "calls.log").open("a") as handle:
+                handle.write(f"{datetime.now():%H:%M:%S.%f} bytes={len(pcm)} gap_ms={gap_ms:.0f}\n")
+            self._dump_buf.extend(pcm)
+            if len(self._dump_buf) > 48000 * 2 * 5:  # 5 s per file
+                self._flush_dump()
         self._frame_buffer.extend(pcm)
         await self._drain_frames()
         self._playing = True
         self._schedule_eos()
+
+    def _flush_dump(self) -> None:
+        if not self._dump_dir or not self._dump_buf:
+            return
+        try:
+            self._dump_dir.mkdir(parents=True, exist_ok=True)
+            name = datetime.now().strftime("play-%H%M%S-%f.pcm")
+            (self._dump_dir / name).write_bytes(bytes(self._dump_buf))
+            log.info("dot2 adapter: dumped %.2f s of outbound PCM to %s",
+                     len(self._dump_buf) / 2 / 48000, name)
+        finally:
+            self._dump_buf.clear()
 
     async def _drain_frames(self) -> None:
         assert self._link is not None
@@ -359,6 +386,7 @@ class Dot2Adapter(DeviceAdapter):
             self._frame_buffer.clear()
             await self._link.send_pcm(tail)
         await self._link.end_stream()
+        self._flush_dump()
         log.debug("dot2 adapter: stream ended (idle %.0f ms)", EOS_IDLE_S * 1000)
 
     async def stop_playback(self, fade_ms: int = 120) -> None:
@@ -368,6 +396,7 @@ class Dot2Adapter(DeviceAdapter):
             self._eos_task = None
         self._playing = False
         self._frame_buffer.clear()
+        self._flush_dump()
         if self._link is not None:
             await self._link.flush()
 
