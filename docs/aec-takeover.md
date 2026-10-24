@@ -35,7 +35,10 @@
 - speexdsp MDF，`SPEEX_FRAME=128`，`filter_len` 默认 4096 taps（256 ms @16 kHz），可到 16384。
 - 拓扑：`cancel="mix"`（默认，阵列混音一路；LX06 实测 25.2 dB）或 `per_channel`（6 路，20.9 dB，6× CPU）。
 - 参考：`AudioFrame` 的尾部通道同帧到达，`process.py` 只取第一个参考通道（`ref = block[:, frame.mic_channels]`）。
-- 门控：`ref_channels < 1` → AEC 与 barge-in 显式关闭并告警。
+- 门控：`ref_channels < 1` → rui 的 AEC 链与**依赖回声消除的 barge-in** 显式关闭并告警。
+  ⚠️ 2026-10-24 实测修正：告警文案写的是 "AEC and barge-in unavailable"，但**播放中唤醒仍然能打断**
+  （`barge:` 路径不看 AEC；实测 4 次、server 侧 `silence_after_ms=0`，设备 ALSA 缓冲约 300 ms 另计）。
+  也就是说：没有回声消除 → 无法可靠区分"用户的打断"与"设备自己声音的回声"；但唤醒词触发打断本身是通的。
 - 可观测：`aec_erle_db` 直接进控制台（"回声抑制 dB"）→ 能做 A/B。
 - 关于"2.4 ms lead"：那是 LX06 回采通道相对麦克风的实测偏置，**代码里没有 shift 逻辑**；4096 taps 的滤波器本身吸收几毫秒的失配。dot2 的 ch8 与麦同帧，偏置应更小。
 
@@ -43,7 +46,7 @@
 
 | 方案 | 上行 | 需要改固件 | rui 侧 | 评价 |
 |---|---|---|---|---|
-| A（现状） | 1ch mono（post-AEC） | 否 | AEC/barge 关闭 | 基线；P1/P2 用它跑通对话 |
+| A（现状） | 1ch mono（post-AEC） | 否 | rui AEC 关闭；唤醒打断实测可用 | 基线；P1/P2 用它跑通对话 |
 | **B（推荐）** | 2ch：波束 mono（预 AEC）+ **去混叠** ch8 参考 | 是，1 处 | 零改动，1 个 filter | 等价 LX06 的 tier 2；带宽 64 KB/s |
 | C（实验） | 8ch：7 麦 + 参考 | 是 | 零改动，7 个 filter | 波束可移到 rui；2 Mbps；rui 的 per-channel 拓扑实测反而更差（20.9 vs 25.2 dB），不优先 |
 | D（取巧） | 1ch mono + adapter 合成参考 | 否 | 零改动 | 双 AEC 级联 + 延迟靠校准；只做对照实验，不做产品 |

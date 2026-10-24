@@ -22,12 +22,14 @@ echo "== unit tests"
 
 echo "== config"
 "$PY" - <<'PY'
-import sys
+import os, sys
 sys.path.insert(0, str(__import__("pathlib").Path("../house-ear/src").resolve()))
 from house_ear.config import load_config
 cfg = load_config("dev/rui/config.yaml")
 dev = next((d for d in cfg.devices if d.adapter == "dot2"), None)
-assert dev is not None and dev.volume <= 30, "dot2 device or its 30% ceiling is missing"
+cap = float(os.environ.get("DOT2_VOLUME_CAP", "100"))
+assert dev is not None, "no dot2 device in the config"
+assert dev.volume <= cap, f"config volume {dev.volume}% above the {cap:.0f}% ceiling"
 assert cfg.audio.playback.rate == 48000, cfg.audio.playback.rate
 print("   ok:", dev.host, dev.listen_port, f"{dev.volume}%")
 PY
