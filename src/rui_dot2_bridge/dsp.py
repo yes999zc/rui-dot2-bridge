@@ -46,7 +46,8 @@ class Band:
 class LoudnessConfig:
     enabled: bool = True
     mode: str = "stock"        # stock (FIR ladder) | custom (parametric) | off
-    trim_db: float = 0.0
+    trim_db: float = -2.0      # owner-approved 2026-10-24: the last word of a phrase
+    #                            ("套") felt sharp at 0 dB; -2 dB keeps the loudness
     curve_ladder: bool = True  # follow the stock volume boundaries
     limiter_ceiling_db: float = -1.0
     limiter_lookahead_ms: float = 5.0
