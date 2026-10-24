@@ -109,7 +109,10 @@ class Dot2Adapter(DeviceAdapter):
         self.device_id = device_id
         self.host = host
         self.room = room
-        self.volume_cap_percent = clamp_percent(volume_cap_percent)
+        # The ceiling itself is NOT clamped by the default 30 %: that default is a
+        # fallback, not a hard limit. This bug made DOT2_VOLUME_CAP=70 silently
+        # behave as 30 and cost a morning of "the speaker is very quiet".
+        self.volume_cap_percent = max(0.0, min(float(volume_cap_percent), 100.0))
         # Capture layout. Stock firmware: one mono channel, no reference.
         # P3 (firmware fork) will add a trailing playback reference; the adapter
         # is already able to expose it, so the switch is config, not code.

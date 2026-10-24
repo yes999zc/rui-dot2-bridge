@@ -22,6 +22,8 @@ import urllib.request
 from pathlib import Path
 
 ADB = os.environ.get("ADB", "adb")
+#: The deployment's own ceiling; 30 % was the overnight rule, 70 % is normal.
+VOLUME_CAP = float(os.environ.get("DOT2_VOLUME_CAP", "30") or 30)
 SERIAL = os.environ.get("DOT2_SERIAL", "G090LF0964340RN6")
 results: list[tuple[str, str, str]] = []
 
@@ -82,7 +84,8 @@ def check_config(path: Path) -> dict:
         dev = next((d for d in cfg.devices if d.adapter == "dot2"), None)
         check(dev is not None, "config device", f"dot2 @ {dev.host}:{dev.listen_port}", "no adapter: dot2 device")
         if dev is not None:
-            check(int(dev.volume) <= 30, "config volume", f"{dev.volume}% (≤30)", f"{dev.volume}% > 30")
+            check(int(dev.volume) <= VOLUME_CAP, "config volume",
+                  f"{dev.volume}% (≤{VOLUME_CAP:.0f}%)", f"{dev.volume}% > {VOLUME_CAP:.0f}%")
         capture = cfg.audio.capture
         check(capture.rate == 16000, "capture rate", "16000 Hz", f"{capture.rate} Hz")
         check(capture.bits == 16, "capture bits", "S16", f"{capture.bits} bit")
@@ -122,7 +125,9 @@ def check_api(api: str) -> None:
             volume = json.loads(response.read())
         value = volume.get("volume")
         if isinstance(value, int):
-            check(value <= 77, "device volume", f"{value}/255 (≤30%)", f"{value}/255 > 30%")
+            ceiling = round(VOLUME_CAP * 255 / 100)
+            check(value <= ceiling, "device volume",
+                  f"{value}/255 (≤{VOLUME_CAP:.0f}%)", f"{value}/255 > {VOLUME_CAP:.0f}% ({ceiling})")
         else:
             warn(False, "device volume", "visible", "not reported by the adapter")
     except Exception as exc:  # noqa: BLE001

@@ -99,3 +99,10 @@ if [ -z "${DOT2_TOKEN:-}" ] && [ -r "$ROOT/secrets/device_token" ]; then
   DOT2_TOKEN="$(cat "$ROOT/secrets/device_token")"
   export DOT2_TOKEN
 fi
+
+# --- volume ceiling (percent of the device's own 0-127 scale) ---------------
+# The scale is dB-linear (0.5 dB/step, 127 = 0 dB), so 30 % is -44.5 dB and
+# effectively inaudible. 70 % = level 89 = -19 dB (normal indoor); 90 % = level 114
+# = -6.5 dB (loud but not unity).
+# 9哥 can raise/lower this line; the adapter enforces it everywhere.
+export DOT2_VOLUME_CAP="${DOT2_VOLUME_CAP:-90}"

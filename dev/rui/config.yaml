@@ -35,7 +35,7 @@ devices:
     host: <lan-ip>
     room: 客厅
     wake_words: ["你好小瑞"]
-    volume: 30
+    volume: 90
     listen_port: 8870
     token_env: DOT2_TOKEN
     led:
