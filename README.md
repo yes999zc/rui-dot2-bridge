@@ -54,6 +54,7 @@ docs/p3-firmware-patch.md  P3 固件补丁计划（上游代码路径、约 100 
 docs/p0-p1-report.md    P0/P1 真机实测报告（协议、音量、TTS 播放、声学回路转写、KWS 差距）
 docs/p2-runbook.md      P2 真人实测 runbook（唤醒/打断/误唤醒，含工具用法）
 docs/plug-socket-contract.md  插头/插座 工作界面（rui 定义插座、本仓库交付插头；当前盲开）
+docs/milestone-m1.md    M1 验收清单 + NAS 一次性部署流程（本地磨平 → NAS 验证）
 docs/deploy.md          部署与回滚 runbook
 src/rui_dot2_bridge/    adapter 实现（Phase 1 起填充）
 src/sitecustomize.py    注入 rui 进程完成 adapter 注册（不改 rui 仓库）
