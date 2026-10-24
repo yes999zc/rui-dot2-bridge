@@ -159,12 +159,22 @@ class PlaybackTest(unittest.IsolatedAsyncioTestCase):
         await self.adapter.play(bytes(SPEAKER_CHUNK_BYTES * 12), sample_rate=48000, channels=1)
         self.assertTrue(self.link.sent)  # crossed the threshold and started
 
+    async def test_stop_playback_while_active_flushes_then_ends_the_stream(self) -> None:
+        self.adapter._prebuffer_bytes = 0
+        await self.adapter.play(bytes(9000), sample_rate=48000, channels=1)
+        await self.adapter.stop_playback()
+        self.assertEqual(self.link.flushed, 1)
+        # EOS after the flush clears the device's discarding state, otherwise the
+        # next reply's first frames can be swallowed.
+        self.assertEqual(self.link.eos, 1)
+
     async def test_stop_playback_flushes_and_drops_buffer(self) -> None:
         await self.adapter.play(bytes(5000), sample_rate=48000, channels=1)
         await self.adapter.stop_playback()
         self.assertEqual(self.link.flushed, 1)
+        self.assertEqual(self.link.eos, 1)  # active stop ends the stream explicitly
         await asyncio.sleep(1.5)
-        self.assertEqual(self.link.eos, 0)  # the idle EOS must not fire after a stop
+        self.assertEqual(self.link.eos, 1)  # the idle EOS must not fire again
 
 
 class VolumeTest(unittest.IsolatedAsyncioTestCase):
