@@ -21,7 +21,8 @@
 
 - 曲线系数来自设备原文件 `/system/vendor/etc/audio-algorithms/EQ_*.cfg`，**只读拉取**，
   放在 `artifacts/eq-prototype/`（vendor 文件，已 gitignore；部署时放 `secrets/eq/`）；
-- 限幅器：5 ms look-ahead、−1 dBFS ceiling、80 ms release，硬限 −0.1 dBFS；
+- 限幅器：5 ms look-ahead（**带 5 ms 延迟线，跨块生效**）、−1 dBFS ceiling、80 ms release，硬限 −0.1 dBFS；
+  早期版本按 100 ms 块各自前瞻，块尾会欠限幅，集成后听感比离线渲染差——已修；
 - 附加延迟约 10.7 ms（1024-tap 线性相位 FIR 的群延迟）+ 0（限幅用前瞻而非延时）；
 - CPU：7 秒音频离线处理 < 0.5 s；实时每 100 ms 块一次 FFT/卷积，约占单核 2–4%。
 
@@ -36,7 +37,12 @@
 | `limiter_ceiling_db` | −1.0 | 限幅目标峰值 |
 | `limiter_lookahead_ms` | 5.0 | 前瞻窗口 |
 | `limiter_release_ms` | 80.0 | 释放时间 |
+| `lowcut_hz` / `lowcut_db` | 250 / **6** | EQ 后的低架削减（原厂低频提升在小喇叭上会失真） |
+| `highshelf_hz` / `highshelf_db` | 4000 / **2** | 高频轻微收敛（去掉"偏尖"的听感） |
 | `bands` | [] | `custom` 模式：`{type, freq, gain_db, q}` 列表 |
+
+当前默认值 = 2026-10-24 试听选定的 **v11**：`EQ_100 + 低架 −6 dB@250 Hz + 高架 −2 dB@4 kHz + 限幅 −1 dBFS`，
+A 计权响度与 v0 相同（−14.8 dBFS），低频能量 89% → 82%，无失真、无削波。
 
 ## 运行时接口（给 rui 后台调）
 

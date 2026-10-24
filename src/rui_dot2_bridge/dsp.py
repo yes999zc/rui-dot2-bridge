@@ -51,6 +51,13 @@ class LoudnessConfig:
     limiter_ceiling_db: float = -1.0
     limiter_lookahead_ms: float = 5.0
     limiter_release_ms: float = 80.0
+    # Post-EQ tone shaping (approved 2026-10-24: -6 dB low shelf + -2 dB high
+    # shelf keeps the loudness of the stock curve without the harsh low end or
+    # the "a bit sharp" impression the bass cut creates).
+    lowcut_hz: float = 250.0
+    lowcut_db: float = 6.0
+    highshelf_hz: float = 4000.0
+    highshelf_db: float = 2.0
     bands: list[dict] = field(default_factory=list)
 
     @classmethod
@@ -172,25 +179,36 @@ class Limiter:
                  hard_clip_db: float = -0.1) -> None:
         self.rate = rate
         self.ceiling = 10 ** (ceiling_db / 20.0)
+        # A hair below the target: gain smoothing lags by a sample or two, and a
+        # 0.001 dB overshoot is not worth a hard clip.
+        self.target = self.ceiling * 0.999
         self.hard_clip = 10 ** (hard_clip_db / 20.0)
         self.lookahead = max(1, int(rate * lookahead_ms / 1000))
         self.release = math.exp(-1.0 / max(1.0, rate * release_ms / 1000.0))
         self.gain = 1.0
+        # Output is delayed by the lookahead so the window really is in the
+        # future; the old per-chunk version padded the chunk end with its own
+        # last sample, which under-limited the last ~5 ms of every 100 ms and
+        # is what made the integrated path sound worse than the offline render.
+        self.pending = np.zeros(self.lookahead, dtype=np.float64)
 
     def process(self, x: np.ndarray) -> np.ndarray:
         if x.size == 0:
             return x
-        padded = np.pad(np.abs(x), (0, self.lookahead), mode="edge")
+        combined = np.concatenate([self.pending, x])
+        tail = combined[-1] if combined.size else 0.0
+        padded = np.concatenate([combined, np.full(self.lookahead, tail)])
         windows = np.lib.stride_tricks.sliding_window_view(padded, self.lookahead + 1)
         peak = windows.max(axis=1)[: len(x)]
-        desired = np.minimum(1.0, self.ceiling / np.maximum(peak, 1e-12))
-        out = np.empty_like(x)
+        desired = np.minimum(1.0, self.target / np.maximum(peak, 1e-12))
+        out = np.empty(len(x), dtype=np.float64)
         g = self.gain
         release = self.release
         for i, target in enumerate(desired):
             g = target if target < g else release * g + (1.0 - release) * target
-            out[i] = x[i] * g
+            out[i] = combined[i] * g
         self.gain = g
+        self.pending = combined[len(x):]
         return np.clip(out, -self.hard_clip, self.hard_clip)
 
 
@@ -204,6 +222,7 @@ class LoudnessProcessor:
         self.config = config
         self.curve_name = ""
         self._fir: FirStream | None = None
+        self._shelves: list[BiquadStream] = []
         self._biquads: list[BiquadStream] = []
         self._limiter = Limiter(rate, config.limiter_ceiling_db,
                                 config.limiter_lookahead_ms, config.limiter_release_ms)
@@ -217,6 +236,7 @@ class LoudnessProcessor:
         cfg = self.config
         if not cfg.enabled or cfg.mode == "off":
             self._fir = None
+            self._shelves = []
             self._biquads = []
             return
         if cfg.mode == "stock":
@@ -229,6 +249,14 @@ class LoudnessProcessor:
         elif cfg.mode == "custom":
             self._fir = None
             self._biquads = [BiquadStream(Band(**band), self.rate) for band in cfg.bands]
+        # Tone shaping applies in both modes, after the EQ and before trim/limit.
+        self._shelves = []
+        if cfg.lowcut_db:
+            self._shelves.append(BiquadStream(
+                Band(type="lowshelf", freq=cfg.lowcut_hz, gain_db=-abs(cfg.lowcut_db), q=0.7), self.rate))
+        if cfg.highshelf_db:
+            self._shelves.append(BiquadStream(
+                Band(type="highshelf", freq=cfg.highshelf_hz, gain_db=-abs(cfg.highshelf_db), q=0.7), self.rate))
         self._limiter = Limiter(self.rate, cfg.limiter_ceiling_db,
                                 cfg.limiter_lookahead_ms, cfg.limiter_release_ms)
 
@@ -257,6 +285,8 @@ class LoudnessProcessor:
             x = self._fir.process(x)
         for biquad in self._biquads:
             x = biquad.process(x)
+        for shelf in self._shelves:
+            x = shelf.process(x)
         if cfg.trim_db:
             x = x * (10 ** (cfg.trim_db / 20.0))
         x = self._limiter.process(x)
@@ -269,6 +299,9 @@ class LoudnessProcessor:
             "curve": self.curve_name,
             "curves_loaded": sorted(self.curves),
             "trim_db": self.config.trim_db,
+            "tone": {"lowcut_hz": self.config.lowcut_hz, "lowcut_db": self.config.lowcut_db,
+                     "highshelf_hz": self.config.highshelf_hz,
+                     "highshelf_db": self.config.highshelf_db},
             "bands": self.config.bands,
             "limiter": {
                 "ceiling_db": self.config.limiter_ceiling_db,
