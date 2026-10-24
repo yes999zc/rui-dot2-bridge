@@ -90,7 +90,7 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
         ) as ws:
             await asyncio.sleep(0.1)
             payload = bytes(2560)
-            await ws.send(bytes([FRAME_MIC]) + payload)
+            await ws.send(bytes([FRAME_MIC]) + b"\x00\x01" + payload)
             chunk = await asyncio.wait_for(self.link.audio.get(), 2)
             self.assertEqual(chunk, payload)
         self.assertEqual(self.link.stats.mic_frames, 1)

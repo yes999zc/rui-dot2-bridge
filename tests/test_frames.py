@@ -9,9 +9,15 @@ from rui_dot2_bridge import frames
 
 class FrameTypeTest(unittest.TestCase):
     def test_parse_splits_type_and_payload(self):
-        kind, payload = frames.parse_data_frame(bytes([frames.FRAME_MIC]) + b"\x01\x02")
+        kind, payload = frames.parse_data_frame(bytes([frames.FRAME_MIC]) + b"\x00\x07" + b"\x01\x02")
         self.assertEqual(kind, frames.FRAME_MIC)
+        # the big-endian u16 sequence after the type byte is not PCM
         self.assertEqual(payload, b"\x01\x02")
+
+    def test_mic_control_frames_are_recognised(self) -> None:
+        self.assertEqual(frames.mic_control(b"\x04"), frames.MIC_CONTROL_END)
+        self.assertEqual(frames.mic_control(b"\x05"), frames.MIC_CONTROL_NO_SPEECH)
+        self.assertIsNone(frames.mic_control(b"\x01\x02"))
 
     def test_empty_frame_is_an_error(self):
         with self.assertRaises(ValueError):

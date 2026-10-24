@@ -2,8 +2,14 @@
 
 Wire facts (see docs/findings.md for the source of each):
 
-* ``/data`` frames start with one type byte, one namespaced by direction.
-* capture (device -> us):  ``0x01`` mic PCM, ``S16LE mono 16 kHz``, 80 ms per chunk.
+* ``/data`` frames start with one type byte, one namespaced by direction; mic
+  audio frames are ``[0x01][seq: u16 big-endian][payload]`` (upstream
+  ``sendFrame`` in data.go). The sequence number is NOT audio — treating it as
+  PCM shifts the signal by one sample per block, harmless for mono ASR but fatal
+  for a 2ch mic+reference uplink (channels end up swapped/offset).
+* capture (device -> us):  ``0x01`` mic PCM, ``S16LE mono 16 kHz``, 80 ms per
+  chunk; ``payload`` is 2560 bytes mono or 5120 bytes for the 2ch
+  ``[mic | ref]`` mode (feature ``dot2_hw_ref``).
 * playback (us -> device): ``0x02`` speaker PCM, ``S16LE mono 48 kHz``, 4096 B
   (42.7 ms) per chunk; ``0x03`` end of stream.
 * the device's raw capture is 9-channel 24-bit; it never leaves the device
@@ -33,15 +39,35 @@ SPEAKER_RATE = 48000
 SPEAKER_CHUNK_BYTES = 4096    # 42.7 ms mono S16, the controller's period
 
 
+#: Device -> controller control frames ride the mic frame type with a one-byte
+#: payload: the upstream writer has no separate type for them.
+MIC_CONTROL_END = 0x04          # bounded turn: speech detected, then ended
+MIC_CONTROL_NO_SPEECH = 0x05    # no speech within the turn timeout
+
+
 def parse_data_frame(frame: bytes) -> tuple[int, bytes]:
     """Split one ``/data`` websocket message into ``(type, payload)``.
 
-    Unknown types are returned as-is rather than raised: the protocol requires
-    both ends to ignore what they do not understand.
+    Mic frames carry a big-endian u16 sequence number after the type byte; it is
+    stripped here so callers only ever see PCM. Unknown types are returned as-is
+    rather than raised: the protocol requires both ends to ignore what they do
+    not understand.
     """
     if not frame:
         raise ValueError("empty /data frame")
-    return frame[0], frame[1:]
+    kind = frame[0]
+    if kind == FRAME_MIC:
+        if len(frame) < 3:
+            return kind, b""
+        return kind, frame[3:]
+    return kind, frame[1:]
+
+
+def mic_control(payload: bytes) -> int | None:
+    """Return the control byte for a one-byte mic payload, else None."""
+    if len(payload) == 1 and payload[0] in (MIC_CONTROL_END, MIC_CONTROL_NO_SPEECH):
+        return payload[0]
+    return None
 
 
 def speaker_frame(pcm: bytes) -> bytes:
