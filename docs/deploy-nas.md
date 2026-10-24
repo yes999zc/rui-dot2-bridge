@@ -1,5 +1,9 @@
 # NAS 部署（P4）runbook — 待用户提供两项信息后就能执行
 
+> **时机（2026-10-24 定）**：NAS 不做日常调试。先在 Mac 本地通过
+> [`milestone-m1.md`](milestone-m1.md) 的 M1 验收，再一次性部署；NAS 上的 rui 是生产实例，
+> 重启会短暂影响小爱 LX06 链路。
+
 目标：把 dot2 adapter 挂进 **NAS 上的 rui 容器**（`<lan-ip>:8080`，x86_64），
 **不修改 rui 仓库、不重建 rui 镜像**。
 
