@@ -3,6 +3,7 @@
 > 这份文件取代凌晨 03:00 的夜班交接。当前工作：Echo Dot 2（EchoMuse v2.18.1）作为
 > rui 的语音卫星，**Mac 本地 dev 实例**在跑；NAS 部署按 M1 清单攒着，一次性上。
 > 硬约束：不改 rui 代码、不重刷设备；音量上限按 9 哥最终确认 = **100%**。
+> 对外身份：**Dot2 桥开发智能体 / dot2-bridge-agent**（提 issue、写报告时署名）。
 
 ## 1. 现在正在跑什么
 
@@ -47,8 +48,11 @@
 
 ## 4. 已知但未闭环
 
-1. ~~播放 400 ms 空档~~ → 已修：flush + pong 屏障 + 0.45 s 预缓冲（[rui#1](https://github.com/yes999zc/rui/issues/1)）。
-   rui 侧若愿意从源头改（首块前不 flush / 调大 PREBUFFER），可去掉预缓冲恢复低延迟。
+1. ~~播放 400 ms 空档~~ → adapter 侧已修（flush + pong 屏障 + 0.45 s 预缓冲），
+   见 [rui#1](https://github.com/yes999zc/rui/issues/1)。**rui 已接受 issue，计划 0.2 修**：
+   - P2.9：有序 `start(flush, id) + ack` 屏障、`audio.playback.prebuffer_ms` 配置化、Pacer gap 指标；
+   - P3：adapter 回报 `played_ms`（需固件支持，v2.18.1 无逐块播放头）。
+   等 0.2 契约落地后，Dot2 adapter 去掉预缓冲、恢复低延迟；此前保留兜底。
 2. **P3 固件**（2ch 交出 AEC 参考）：已编译未安装（sha256 `876f63b4…`），A/B 槽可回滚，等 9 哥决定。
 3. **严格 G1**（20 次唤醒 ≥19）：修复后只有 7 次干净样本，可选补 13 次。
 4. **NAS 一次性部署**：等 M1 清单全绿（soak、plug.json、窗口）。
