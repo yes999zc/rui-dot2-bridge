@@ -85,7 +85,7 @@ def main() -> int:
         wake_count = metrics(args.api).get("wake_count", 0)
         print(f"1) wake word: {args.wake}")
         print("  ", inject(args.inject_port, args.wake))
-        if not wait_for(lambda: metrics(args.api).get("wake_count", 0) > wake_count, 6.0):
+        if not wait_for(lambda count=wake_count: metrics(args.api).get("wake_count", 0) > count, 6.0):
             print("   no wake crossing; retrying")
             time.sleep(2.0)
             continue

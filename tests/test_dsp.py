@@ -20,7 +20,6 @@ from rui_dot2_bridge.dsp import (
     Limiter,
     LoudnessConfig,
     LoudnessProcessor,
-    load_curves,
 )
 
 RATE = 48000

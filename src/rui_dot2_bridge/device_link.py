@@ -38,7 +38,7 @@ from .frames import (
     speaker_eos,
     split_playback,
 )
-from .volume import DEVICE_LEVEL_MAX, VOLUME_CAP_PERCENT, capped_level, clamp_percent
+from .volume import DEVICE_LEVEL_MAX, VOLUME_CAP_PERCENT, capped_level
 
 log = logging.getLogger(__name__)
 
