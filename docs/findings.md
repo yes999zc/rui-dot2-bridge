@@ -118,3 +118,18 @@
 
 修复后：calls.log 无 400 ms 级块间空档；设备流 `underruns=0`、`maxGap≈700 ms`（EOS 尾部静音）。
 代价：回复延迟 +约 0.45 s。EOS 空闲同时从 1.2 s 收到 0.7 s，减少结尾死等。
+
+
+## 2026-10-24 · 上行帧里的 u16 序号（差点毁掉 2ch）
+
+设备上行帧格式是 `[0x01][seq u16 big-endian][payload]`（上游 `data.go` 的 `sendFrame`）。
+我们的 `parse_data_frame` 之前把 seq 当成 PCM 的一部分：
+
+- 单声道时每 80 ms 块多 2 字节 → 每个块错 1 个采样，ASR 能容忍，所以一直没暴露；
+- 2ch `[mic | ref]` 时直接从第一个采样就通道错位 → AEC 打开、`ref_active=true`，但 ERLE ≈ 0，
+  音箱把自己 TTS 当成用户输入（自听）。
+
+修复：`FRAME_MIC` 解析时跳过 2 字节序号；一字节的 mic 控制帧（`0x04` end / `0x05` no-speech）
+不再当音频入队。实测 2ch 块从 5122 → 5120 字节。
+
+**教训**：协议解析要按上游 writer 逐字节核对，不能只看"能跑通"。

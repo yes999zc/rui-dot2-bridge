@@ -47,6 +47,14 @@
 - **部署体检**：`doctor.py` 22 项 0 fail 0 warn。
 - 测试：**56 个单测全绿**，ruff 干净。
 
+## 3.5 P3 固件（2026-10-24 晚）
+
+- 补丁独立成仓库：https://github.com/yes999zc/echomuse-dot2-ref（v0.1.0 release，含 ARM 二进制）；
+- 已安装到 Dot 的 `server_b`（`20261024-1911-dev`），`server_a` 保留旧固件，`./scripts/rollback.sh` 可回；
+- 设备宣告 `ref_uplink`，控制器收到 5120 B 的 2ch `[mic | ref]` 块；
+- 控制器侧 `aec_enabled/ref_active=true`，但实测 ERLE 仍只有 ~0.5–9 dB、自听未消失 →
+  **下一步要查参考通道内容/延迟**（dump 显示 mic 与 ref 相关性仅 ~0.18@65 ms）。
+
 ## 4. 已知但未闭环
 
 1. ~~播放 400 ms 空档~~ → adapter 侧已修（flush + pong 屏障 + 0.45 s 预缓冲），
