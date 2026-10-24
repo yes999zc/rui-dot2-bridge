@@ -39,7 +39,8 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 | **回滚** | ✅ 杀 adapter → 设备 40 s 落到旧 controller；恢复后 45 s 回来（旧 controller 接管会推 85/127，故无人值守时保持停止） |
 | **P3 固件补丁** | ✅ 已编译未安装（`v2.19.0-ea.1` + patch，sha256 `876f63b4…`）；2ch 链路已用假设备在 rui 里验证 |
 | **响度** | 原厂 EQ_50…EQ_100 阶梯 + look-ahead 限幅（**+9.7 dB A 计权、零削波**）；参数运行时可调，见 `docs/loudness-eq.md` |
-| **音量** | 上限可配（`DOT2_VOLUME_CAP`，dev 现为 90% = level 114 = −6.5 dB）；物理按键在此上限内有效 |
+| **音量** | 上限可配，现为 **100%（level 127 = 0 dB）**；控制台回读设备实际值；物理按键在此上限内有效 |
+| **麦克风** | 设备预增益 **18 dB**（默认 24 dB 会削波；实测语音段峰值 0.70–0.88） |
 | **工具链** | ✅ `scripts/check.sh`、`doctor.py`、`device_health.py`、`p2_trials.py`、`soak.py`；ruff 干净 |
 | rui 生产部署（NAS） | ⬜ 待 NAS 部署目录 + 验收日镜像更新；override/runbook 已备好 |
 | 旧 EchoMuse controller | 容器保留可启动，默认停止（30% 音量约束） |

@@ -21,6 +21,15 @@ services:
     environment:
       PYTHONPATH: /opt/rui-py
       DOT2_SECRETS_DIR: /opt/rui-secrets
-      DOT2_VOLUME_CAP: "30"        # hard ceiling, percent of the device's own scale
+      # Ceiling on the device's own dB-linear scale (0.5 dB/step, 127 = 0 dB).
+      # 30 % was the overnight rule and turned out to be -44.5 dB (inaudible);
+      # the owner approved 100 % (level 127, unity) on 2026-10-24.
+      DOT2_VOLUME_CAP: "100"
       DOT2_AEC_ENABLED: "1"        # stock device AEC on; 0 only for acoustic-loop tests
+      # Loudness: EQ_50..EQ_100 curves live in eq/ next to secrets/ (vendor files,
+      # pulled read-only from the device; see docs/loudness-eq.md).
+      DOT2_EQ_DIR: /opt/rui-secrets/eq
+      DOT2_LOUDNESS_FILE: /opt/rui-secrets/loudness.json
+      DOT2_MIC_GAIN_DB: "18"       # device default 24 clips normal speech
+      DOT2_CONTROL_PORT: "8872"    # loopback tuning API for rui's backend
       # No DOT2_INJECT_PORT / DOT2_RECORD: those are dev-only hooks.

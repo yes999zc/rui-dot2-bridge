@@ -23,7 +23,8 @@ from pathlib import Path
 
 ADB = os.environ.get("ADB", "adb")
 #: The deployment's own ceiling; 30 % was the overnight rule, 70 % is normal.
-VOLUME_CAP = float(os.environ.get("DOT2_VOLUME_CAP", "30") or 30)
+#: The deployment's ceiling (2026-10-24: 100 % = unity; the old 30 % was -44.5 dB).
+VOLUME_CAP = float(os.environ.get("DOT2_VOLUME_CAP", "100") or 100)
 SERIAL = os.environ.get("DOT2_SERIAL", "G090LF0964340RN6")
 results: list[tuple[str, str, str]] = []
 

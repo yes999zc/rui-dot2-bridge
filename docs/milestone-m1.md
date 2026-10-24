@@ -18,15 +18,15 @@
 
 | # | 项 | 验收标准 | 证据 |
 |---|---|---|---|
-| 1 | 唤醒 | 真人 20 次 ≥ 19 次；8h 误唤醒 ≤ 2 | `docs/measurements.md`（`p2_trials.py`） |
-| 2 | 打断 | 播放中唤醒可用，静音 P50 ≤ 600 ms；50 轮无自激 | 同上 + 平面日志 `barge:` |
+| 1 | 唤醒 | 真人 20 次 ≥ 19 次；8h 误唤醒 ≤ 2 | 🟡 修复后干净窗口 7/7、说完→出声 P50 998 ms；严格 20 次待补 |
+| 2 | 打断 | 播放中唤醒可用，静音 P50 ≤ 600 ms；50 轮无自激 | 🟡 实测 4 次 barge、server 0 ms；设备 ALSA 缓冲 ~300 ms 未计，声学端到端待测 |
 | 3 | 音量/响度 | ✅ 方案已定：原厂 EQ 阶梯 + 限幅（2026-10-24 A/B 通过：响度明显、无失真、人声不受影响） | `docs/loudness-eq.md`、`docs/audit-*.md`、集成 A/B |
-| 4 | 音量回读 | 控制台显示与设备实际一致（修掉 cap 漏传、目标/回读混用） | 单测 + 现场对照 |
-| 5 | 插头 manifest | `plug.json` 与运行参数一致；`doctor.py` 插头自检全过 | `doctor` 输出 |
-| 6 | 稳定性 | 本地连续 8h：无平面重建、无断连、无内存单调增长 | `soak_report.py` |
-| 7 | 部署件 | bundle 里的 `DOT2_VOLUME_CAP`、override、config 模板都等于最终值（**不得残留 30**） | bundle 内容 + `doctor` |
-| 8 | 回滚演练 | 杀 adapter → 设备落回旧 controller；恢复 → 回来；< 2 min | 设备日志 + old-controller `last_seen` |
-| 9 | 文档 | `handoff-morning.md`、`deploy-nas.md` 与实际一致 | 人工过一遍 |
+| 4 | 音量回读 | 控制台显示与设备实际一致（修掉 cap 漏传、目标/回读混用） | ✅ 2026-10-24 修复 + 回归测试（`a5b635b`） |
+| 5 | 插头 manifest | `plug.json` 与运行参数一致；`doctor.py` 插头自检全过 | 🟡 契约已定（`docs/plug-socket-contract.md`）；`plug.json` 待盲开实现 |
+| 6 | 稳定性 | 本地连续 8h：无平面重建、无断连、无内存单调增长 | 🟡 2026-10-24 10:44 起跑 8h soak（`dev/rui/soak.jsonl`） |
+| 7 | 部署件 | bundle 里的 `DOT2_VOLUME_CAP`、override、config 模板都等于最终值（**不得残留 30**） | ✅ cap=100、EQ 曲线进 bundle（`make_deploy_bundle.sh`） |
+| 8 | 回滚演练 | 杀 adapter → 设备落回旧 controller；恢复 → 回来；< 2 min | ✅ 2026-10-24 复演：设备依次试 8867/8770（旧 controller 已停，拒绝），恢复后 ~35 s 重新注册；完整回落旧 controller 见首轮 40 s 记录 |
+| 9 | 文档 | `handoff-morning.md`、`deploy-nas.md` 与实际一致 | 🟡 barge 语义已纠错；音量/麦克风/响度已更新 |
 
 任何一项不过，**不上 NAS**。
 
