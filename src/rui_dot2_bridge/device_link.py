@@ -96,7 +96,9 @@ class DeviceLink:
         aec_delay_ms: int | None = None,
         agc_enabled: bool | None = None,
         barge_in_enabled: bool | None = None,
-        barge_in_threshold: int | None = None,
+        barge_in_threshold: float | None = None,
+        wake_mic: int | None = None,
+        aec_ref_source: str | None = None,
         oww_on_device: str = "off",
         on_button: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
@@ -125,6 +127,10 @@ class DeviceLink:
         self.agc_enabled = agc_enabled
         self.barge_in_enabled = barge_in_enabled
         self.barge_in_threshold = barge_in_threshold
+        # wakeMic picks which microphone feeds the device gate (0 centre, the
+        # periphery has a different echo path); aecRefSource selects hw/sw ref.
+        self.wake_mic = wake_mic
+        self.aec_ref_source = aec_ref_source
         self.oww_on_device = oww_on_device
         self.on_button = on_button
 
@@ -309,6 +315,9 @@ class DeviceLink:
                        if self.barge_in_enabled is not None else {}),
                     **({"bargeInThreshold": self.barge_in_threshold}
                        if self.barge_in_threshold is not None else {}),
+                    **({"wakeMic": self.wake_mic} if self.wake_mic is not None else {}),
+                    **({"aecRefSource": self.aec_ref_source}
+                       if self.aec_ref_source is not None else {}),
                 }
             )
         await self._send_control({"type": "mic_start", "lock_mic": False})
