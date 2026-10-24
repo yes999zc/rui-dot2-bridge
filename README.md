@@ -48,6 +48,11 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 | rui 生产部署（NAS） | ⬜ 待 NAS 部署目录 + 验收日镜像更新；override/runbook 已备好 |
 | 旧 EchoMuse controller | 容器保留可启动，默认停止（30% 音量约束） |
 
+## 独立测试实例（honor-nas）
+
+`<lan-ip>:8095` 上跑着一套独立的 rui 0.1.3（systemd `rui-test`），与 `.168` 生产和
+Mac dev 实例隔离；部署细节与踩坑见 [`docs/deploy-honor-nas.md`](docs/deploy-honor-nas.md)。
+
 ## 目录
 
 ```
