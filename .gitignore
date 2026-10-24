@@ -35,3 +35,7 @@ dev/rui*/audio*.sock
 dev/rui*/logs/
 artifacts/
 artifacts/eq-prototype/*.cfg
+
+# stray playback dumps (DOT2_PLAYBACK_DUMP defaults to off now)
+play-*.pcm
+/calls.log
