@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — 2026-10-24（白天）
+
+### Fixed
+
+- 音量：上限从 30 %（−44.5 dB，几乎听不见）改为 **100 % = level 127 = unity**；
+  修掉"上限被默认 30 二次夹"与"目标/回读混用"两个 bug，控制台现在显示设备实际值。
+- 响度：stock EQ 阶梯 + 低架/高架 + 限幅 + trim −2 dB（A/B 通过）；修掉限幅器
+  `abs()` 漏检导致的破音、换流状态残留导致的杂音、回复末尾的"嗒"声。
+- 播放：`EOS_IDLE_S` 0.4 → 1.2 s，避免 TTS 断供时把短回复切成两段流重新 prime。
+- 麦克风：设备预增益 24 → 18 dB，消除削波（语音段峰值 0.70–0.88）。
+- 部署：override 的 `DOT2_VOLUME_CAP` 改为 100，EQ 曲线打进 bundle，`doctor` 默认新上限。
+
+### Added
+
+- `DOT2_MUTE=1`：静音扬声器但保留唤醒/ASR/打断。
+- 响度运行时调参 `GET/PUT /loudness`（`DOT2_CONTROL_PORT`，dev 8872）。
+- `tools/stock_eq.py`（离线 EQ 评估）与 `tools/eq_variants.py`（变体试听）。
+- P2 记录器 v2：按 VAD 收尾计时、识别重复唤醒、`--replay` 复盘。
+- 出站 PCM dump（`DOT2_PLAYBACK_DUMP`，调试用）。
+
+### Filed upstream
+
+- [yes999zc/rui#1](https://github.com/yes999zc/rui/issues/1)：播放回复出现 ~400 ms 中段空档
+  （流式 TTS 到达与 Pacer 预存不匹配），附时间戳、设备日志与三条建议。
+
 ## v0.1.0 — 2026-10-24
 
 First runnable version: the Dot 2 is a rui voice satellite, with **no changes to
