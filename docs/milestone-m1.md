@@ -23,7 +23,7 @@
 | 3 | 音量/响度 | ✅ 方案已定：原厂 EQ 阶梯 + 限幅（2026-10-24 A/B 通过：响度明显、无失真、人声不受影响） | `docs/loudness-eq.md`、`docs/audit-*.md`、集成 A/B |
 | 4 | 音量回读 | 控制台显示与设备实际一致（修掉 cap 漏传、目标/回读混用） | ✅ 2026-10-24 修复 + 回归测试（`a5b635b`） |
 | 5 | 插头 manifest | `plug.json` 与运行参数一致；`doctor.py` 插头自检全过 | 🟡 契约已定（`docs/plug-socket-contract.md`）；`plug.json` 待盲开实现 |
-| 6 | 稳定性 | 本地连续 8h：无平面重建、无断连、无内存单调增长 | 🟡 2026-10-24 10:44 起跑 8h soak（`dev/rui/soak.jsonl`） |
+| 6 | 稳定性 | 本地连续 8h：无平面重建、无断连、无内存单调增长 | ✅ 2026-10-24 10:44→18:44（953 采样、0 采样间断）；最后一次维护重启 11:18 后**连续 7.4h 无重建/无断连**。注：rui `/health` 不暴露 RSS，内存项未测 |
 | 7 | 部署件 | bundle 里的 `DOT2_VOLUME_CAP`、override、config 模板都等于最终值（**不得残留 30**） | ✅ cap=100、EQ 曲线进 bundle（`make_deploy_bundle.sh`） |
 | 8 | 回滚演练 | 杀 adapter → 设备落回旧 controller；恢复 → 回来；< 2 min | ✅ 2026-10-24 复演：设备依次试 8867/8770（旧 controller 已停，拒绝），恢复后 ~35 s 重新注册；完整回落旧 controller 见首轮 40 s 记录 |
 | 9 | 文档 | `handoff-morning.md`、`deploy-nas.md` 与实际一致 | 🟡 barge 语义已纠错；音量/麦克风/响度已更新 |

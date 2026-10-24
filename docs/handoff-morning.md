@@ -17,7 +17,7 @@
 | 响度处理 | 开：stock EQ 阶梯（EQ_50…EQ_100）+ 低架 −6 dB@250 + 高架 −2 dB@4k + 限幅 −1 dBFS + trim −2 dB |
 | 设备 AEC | 开（`[aec] enabled: frame=512 tail=64ms`）；rui 侧 AEC 因无参考关闭 |
 | 旧 EchoMuse controller | 容器保留、默认停止（接管时会推 85/127） |
-| 8 小时 soak | 10:44 起跑，每分钟一行 `dev/rui/soak.jsonl`（M1 第 6 项） |
+| 8 小时 soak | ✅ 已完成：10:44→18:44，953 采样、0 间断；11:18 后连续 **7.4h 无平面重建/无断连**（`docs/soak-report.md`） |
 | 播放 | flush 后加 **pong 屏障**（保 prime 旁路、免跨 socket 竞态）+ **0.45 s 预缓冲**（`DOT2_PREBUFFER_MS`）；实测 `primeWait` 17–22 ms、`underruns=0`、流内 `maxGap` 123–156 ms；回复延迟 +~0.45 s |
 
 ## 2. 2026-10-24 白天修掉的真问题
