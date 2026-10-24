@@ -52,8 +52,10 @@
 - 补丁独立成仓库：https://github.com/yes999zc/echomuse-dot2-ref（v0.1.0 release，含 ARM 二进制）；
 - 已安装到 Dot 的 `server_b`（`20261024-1911-dev`），`server_a` 保留旧固件，`./scripts/rollback.sh` 可回；
 - 设备宣告 `ref_uplink`，控制器收到 5120 B 的 2ch `[mic | ref]` 块；
-- 控制器侧 `aec_enabled/ref_active=true`，但实测 ERLE 仍只有 ~0.5–9 dB、自听未消失 →
-  **下一步要查参考通道内容/延迟**（dump 显示 mic 与 ref 相关性仅 ~0.18@65 ms）。
+- **AEC 结论（2026-10-24 晚，三份调研）**：设备 AEC 稳态 16.5–19 dB，该声学链路线性上限约 14–18 dB，
+  搬到 rui 不会更好；生产配置定为 **device AEC + 单声道**（`ref_channels=0`），`DOT2_PLAYBACK_GATE_MS`
+  作为可选兜底（默认 0）。之前"自听"是 `debug/say` 把输入文本记成 turn 的误判；`debug/play` 干净复测
+  无自听。详见 `docs/aec-rui-analysis.md`、`docs/aec-device-tuning.md`、`docs/aec-parameter-model.md`。
 
 ## 4. 已知但未闭环
 

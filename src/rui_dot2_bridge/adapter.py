@@ -199,6 +199,14 @@ class Dot2Adapter(DeviceAdapter):
         ) / 1000.0
         self._stream_started = False
         self._prebuffer_task: asyncio.Task | None = None
+        # Playback gate: while our own audio is on the speaker, the residual echo
+        # is what the controller's VAD/ASR hears as a user turn ("self-hearing").
+        # With device AEC alone at 14-18 dB that residual is above the VAD floor.
+        # Gating the uplink for a configurable hold after playback makes the plug
+        # (speaker side) own the decision instead of asking rui to change.
+        _gate = os.environ.get("DOT2_PLAYBACK_GATE_MS", "").strip()
+        self._playback_gate_s = (float(_gate) / 1000.0) if _gate else 0.0
+        self._last_play_at: float | None = None
         dump = os.environ.get("DOT2_PLAYBACK_DUMP", "").strip()
         self._dump_dir = Path(dump) if dump else None
         uplink_dump = os.environ.get("DOT2_UPLINK_DUMP", "").strip()
@@ -391,6 +399,12 @@ class Dot2Adapter(DeviceAdapter):
                 for piece in _rechunk(block, self.channels, PLAY_CHUNK_MS):
                     if not piece:
                         continue
+                    if self._playback_gate_s and self._last_play_at is not None:
+                        quiet = time.monotonic() - self._last_play_at > self._playback_gate_s
+                        # rate is set by the last play() call; EOS/idle does not
+                        # update it, so a 0.5 s hold covers the speaker tail.
+                        if not quiet:
+                            piece = self._gate_mic(piece)
                     self._seq += 1
                     yield AudioFrame(
                         device_id=self.device_id,
@@ -403,6 +417,16 @@ class Dot2Adapter(DeviceAdapter):
                     )
         except asyncio.CancelledError:
             raise
+
+    def _gate_mic(self, piece: bytes) -> bytes:
+        """Silence the microphone channel(s), keeping the reference intact."""
+        if self.ref_channels == 0:
+            return bytes(len(piece))
+        step = 2 * self.channels
+        out = bytearray(piece)
+        for i in range(0, len(out) - step + 1, step):
+            out[i:i + 2] = b"\x00\x00"  # first channel = mic
+        return bytes(out)
 
     async def play(self, pcm: bytes, *, sample_rate: int, channels: int) -> None:
         """Queue mono PCM. rui has already resampled it to ``playback.rate``."""
@@ -431,6 +455,7 @@ class Dot2Adapter(DeviceAdapter):
             self._dump_buf.extend(pcm)
             if len(self._dump_buf) > 48000 * 2 * 5:  # 5 s per file
                 self._flush_dump()
+        self._last_play_at = time.monotonic()
         self._frame_buffer.extend(pcm)
         if not self._stream_started:
             if len(self._frame_buffer) >= self._prebuffer_bytes:
