@@ -22,10 +22,10 @@
 
 ### Fixed (playback holes)
 
-- 每轮回复开头的 ~400 ms 空档：空闲时 `stop_playback()` 不再发 flush（flush 只在真正有播放时发），
-  消除"首块已发、flush 才到"的跨 socket 竞态。
+- 每轮回复开头的 ~400 ms 空档：保留 `speaker_flush`（设备 prime 旁路需要它），但在同一条
+  control 连接上加 **ping/pong 屏障**，保证 flush 先于首帧被处理，消除跨 socket 竞态。
 - 剩余 TTS 分片空档：adapter 加 **0.45 s 播放预缓冲**（`DOT2_PREBUFFER_MS`，短回复 0.35 s 后强制开始）
-  吸收；代价是回复延迟 +~0.45 s。EOS 空闲 1.2 → 0.7 s。
+  吸收；代价是回复延迟 +~0.45 s。实测设备 `primeWait` 17–22 ms、`underruns=0`、流内 `maxGap` 123–156 ms。
 
 ### Filed upstream
 
