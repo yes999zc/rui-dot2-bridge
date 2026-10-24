@@ -33,7 +33,7 @@
 | `enabled` | true | 总开关（A/B 用） |
 | `mode` | `stock` | `stock`（FIR 阶梯）/ `custom`（参数 EQ）/ `off` |
 | `curve_ladder` | true | true=跟随音量选曲线；false=固定 `EQ_100` |
-| `trim_db` | 0 | EQ 后、限幅前的整体增益（±dB） |
+| `trim_db` | **−2** | EQ 后、限幅前的整体增益（±dB）；2026-10-24 试听定：−2 dB 去掉句尾"刺耳" |
 | `limiter_ceiling_db` | −1.0 | 限幅目标峰值 |
 | `limiter_lookahead_ms` | 5.0 | 前瞻窗口 |
 | `limiter_release_ms` | 80.0 | 释放时间 |

@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "mode": "stock",
-  "trim_db": 0.0,
+  "trim_db": -2.0,
   "curve_ladder": true,
   "limiter_ceiling_db": -1.0,
   "limiter_lookahead_ms": 5.0,
