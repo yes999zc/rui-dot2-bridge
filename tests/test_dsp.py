@@ -58,13 +58,21 @@ class LimiterTest(unittest.TestCase):
         limiter = Limiter(RATE, ceiling_db=-1.0)
         x = tone(0.5, amp=0.9)
         out = limiter.process(np.concatenate([x, x]))
-        self.assertLessEqual(float(np.max(np.abs(out))), 10 ** (-1.0 / 20.0) + 1e-6)
+        self.assertLessEqual(float(np.max(np.abs(out))), 10 ** (-1.0 / 20.0))
 
-    def test_quiet_signal_passes_through(self) -> None:
+    def test_quiet_signal_passes_through_delayed_by_lookahead(self) -> None:
         limiter = Limiter(RATE)
         x = tone(0.2, amp=0.05)
         out = limiter.process(x)
-        np.testing.assert_allclose(out, x, atol=1e-9)
+        delay = limiter.lookahead
+        np.testing.assert_allclose(out[delay:], x[: len(x) - delay], atol=1e-9)
+
+    def test_chunk_boundaries_do_not_leak_peaks(self) -> None:
+        limiter = Limiter(RATE, ceiling_db=-1.0)
+        x = tone(0.5, amp=0.9)
+        parts = [limiter.process(x[i:i + 100]) for i in range(0, len(x), 100)]
+        out = np.concatenate(parts)
+        self.assertLessEqual(float(np.max(np.abs(out))), 10 ** (-1.0 / 20.0))
 
 
 class BiquadTest(unittest.TestCase):
@@ -93,19 +101,26 @@ class ProcessorTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def processor(self, **config) -> LoudnessProcessor:
+        # tone shelves off by default in tests: they are evaluated separately
+        config.setdefault("lowcut_db", 0.0)
+        config.setdefault("highshelf_db", 0.0)
         return LoudnessProcessor(LoudnessConfig(**config), self.dir)
 
     def test_stock_unity_curve_is_transparent_except_limiter(self) -> None:
         proc = self.processor(trim_db=0.0)
         x = tone(0.1, amp=0.1)
         out = np.frombuffer(proc.process_bytes(pcm(x)), dtype="<i2") / 32768.0
-        np.testing.assert_allclose(out, x, atol=1e-3)
+        delay = proc._limiter.lookahead
+        np.testing.assert_allclose(out[delay:], x[: len(x) - delay], atol=1e-3)
 
     def test_trim_changes_level(self) -> None:
         proc = self.processor(trim_db=6.0)
-        x = tone(0.1, amp=0.05)
+        x = tone(0.1, amp=0.05, freq=1000.0)
         out = np.frombuffer(proc.process_bytes(pcm(x)), dtype="<i2") / 32768.0
-        ratio = float(np.sqrt(np.mean(out ** 2)) / np.sqrt(np.mean(x ** 2)))
+        delay = proc._limiter.lookahead
+        out = out[delay:]
+        ref = x[: len(out)]
+        ratio = float(np.sqrt(np.mean(out ** 2)) / np.sqrt(np.mean(ref ** 2)))
         self.assertAlmostEqual(20 * math.log10(ratio), 6.0, delta=0.3)
 
     def test_curve_ladder_follows_level(self) -> None:
@@ -125,11 +140,24 @@ class ProcessorTest(unittest.TestCase):
         out = proc.process_bytes(pcm(tone(0.05, amp=0.1)))
         self.assertGreater(len(out), 0)
 
+    def test_tone_shelves_shape_the_bands(self) -> None:
+        proc = self.processor(lowcut_db=6.0, highshelf_db=2.0)
+        low = tone(0.2, freq=150.0, amp=0.1)
+        high = tone(0.2, freq=8000.0, amp=0.05)
+        low_out = np.frombuffer(proc.process_bytes(pcm(low)), dtype="<i2") / 32768.0
+        high_out = np.frombuffer(proc.process_bytes(pcm(high)), dtype="<i2") / 32768.0
+        low_gain = 20 * math.log10(max(np.sqrt(np.mean(low_out ** 2)), 1e-9) / np.sqrt(np.mean(low ** 2)))
+        high_gain = 20 * math.log10(max(np.sqrt(np.mean(high_out ** 2)), 1e-9) / np.sqrt(np.mean(high ** 2)))
+        self.assertLess(low_gain, -3.0)
+        self.assertLess(high_gain, -1.0)
+
     def test_missing_curves_fall_back_to_flat(self) -> None:
-        proc = LoudnessProcessor(LoudnessConfig(mode="stock"), Path(self.dir) / "nope")
+        proc = LoudnessProcessor(LoudnessConfig(mode="stock", lowcut_db=0.0, highshelf_db=0.0),
+                                 Path(self.dir) / "nope")
         x = tone(0.05, amp=0.1)
         out = np.frombuffer(proc.process_bytes(pcm(x)), dtype="<i2") / 32768.0
-        np.testing.assert_allclose(out, x, atol=1e-3)
+        delay = proc._limiter.lookahead
+        np.testing.assert_allclose(out[delay:], x[: len(x) - delay], atol=1e-3)
 
     def test_config_roundtrip(self) -> None:
         path = self.dir / "loudness.json"
