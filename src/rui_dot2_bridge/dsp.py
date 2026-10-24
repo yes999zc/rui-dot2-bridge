@@ -54,14 +54,14 @@ class LoudnessConfig:
     bands: list[dict] = field(default_factory=list)
 
     @classmethod
-    def from_json(cls, data: dict) -> "LoudnessConfig":
+    def from_json(cls, data: dict) -> LoudnessConfig:
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in data.items() if k in known})
 
     def to_json(self) -> dict:
         return asdict(self)
 
-    def merged(self, patch: dict) -> "LoudnessConfig":
+    def merged(self, patch: dict) -> LoudnessConfig:
         data = self.to_json()
         for key, value in patch.items():
             if key in data and key != "bands":

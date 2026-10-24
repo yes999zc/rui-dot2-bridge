@@ -30,7 +30,7 @@ from house_ear.device.contract import (
 
 from .control import start_control_server
 from .device_link import DeviceLink
-from .dsp import LoudnessConfig, LoudnessProcessor
+from .dsp import LoudnessProcessor
 from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE
 from .volume import VOLUME_CAP_PERCENT, capped_level, clamp_percent
 
