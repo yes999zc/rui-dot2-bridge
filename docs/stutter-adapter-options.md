@@ -465,14 +465,17 @@ adb -s G090LF0964340RN6 shell su -c 'cat /tmp/server.log' | grep 'voice stream c
 
 ## 7. 风险与开放问题
 
-1. **P0 屏障的 RTT**：本机/局域网 5–50 ms；如果 control WS 拥塞或设备忙，超时 300 ms 会拖慢首声；需要超时后继续（只告警），不能阻塞回复。
-2. **P0 的 flush→EOS 顺序**：在真机上要确认 `endStream()` 确实清掉 `discarding`（源码如此），并且 EOS 之后 `eosPending` 仍为 true（`flush` 已置位，`endStream` 在 `wasDiscarding` 时不改），这样下一流仍走 prime 旁路。
-3. **P1 不能创造音频**：连续多次空档或 TTS 平均慢于实时时，lead 仍会耗尽；补零只能防止二次 prime，不能消除源空档。需要监控 `underrun_frames`。
-4. **短回复**：`LEAD_MAX_WAIT` 要保证“在只收到一块时也能在 ~400–500 ms 内开声”；否则短回复延迟会比现在明显。
-5. **EOS/stop 竞态**：sender task、`_eos_after_idle`、`stop_playback` 三者只能有一个 owner；建议用 `_gen` + 单一 sender 任务，删掉独立的 `_eos_task`。
-6. **补零与统计**：补零会让设备 `periods` 增加、`bytesRecv` 增加，但不是真实语音；adapter 侧必须单独记 `underrun_frames`，不要用设备 `periods` 判断空档。
-7. **设备侧长期修复**：`primePeriods` 可配 + `eosPending` 拆分是根治；否则 adapter 永远要维护“flush 旁路”的隐式契约。
-8. **未验证**：本轮没有在 P0/P1 落地后重启 rui，也没有出声；所有延迟数字是代码/固件推算，需按 §6 实测确认。
+1. **当前 prebuffer 阈值 bug（最高优先级）**：`adapter.py:376` 的 900 B 比较让 0.45 s 完全不生效；不修的话，“prebuffer 吸收空档”的结论是错的。单测应直接断言 9600 B 不放行。
+2. **no-op 的首声代价**：`primeWait=762–968 ms`；如果 rui 的“说完→出声”预算已经很紧，no-op 会把 P50 推到 ~1.8 s。要么接受，要么做 §4.1 屏障。
+3. **EOS 0.7 s 的拆流风险**：TTS 停顿 0.7–1.2 s 会被 EOS 切断并重新 prime 1 s；建议回到 1.2，或先统计 TTS 停顿分布。
+4. **P0b 屏障的 RTT**：本机/局域网 5–50 ms；如果 control WS 拥塞或设备忙，超时 300 ms 会拖慢首声；需要超时后继续（只告警），不能阻塞回复。
+5. **P0b 的 flush→EOS 顺序**：在真机上要确认 `endStream()` 确实清掉 `discarding`（源码如此），并且 EOS 之后 `eosPending` 仍为 true（`flush` 已置位，`endStream` 在 `wasDiscarding` 时不改），这样下一流仍走 prime 旁路。
+6. **P1 不能创造音频**：连续多次空档或 TTS 平均慢于实时时，lead 仍会耗尽；补零只能防止二次 prime，不能消除源空档。需要监控 `underrun_frames`。
+7. **短回复**：`PREBUFFER_START_S=0.35` 要保证“只收到一块时也能在 ~400–500 ms 内开声”；否则短回复延迟会比现在明显。
+8. **EOS/stop 竞态**：sender task、`_eos_after_idle`、`stop_playback` 三者只能有一个 owner；建议用 `_gen` + 单一 sender 任务，删掉独立的 `_eos_task`。
+9. **补零与统计**：补零会让设备 `periods` 增加、`bytesRecv` 增加，但不是真实语音；adapter 侧必须单独记 `underrun_frames`，不要用设备 `periods` 判断空档。
+10. **设备侧长期修复**：`primePeriods` 可配 + `eosPending` 拆分是根治；否则 adapter 永远要维护“flush 旁路”的隐式契约。
+11. **未验证**：post-fix 的 `primeWait` 来自 03:11 UTC 三条设备日志，不是本轮重启后的新样本；延迟与“是否真的没有卡顿”需按 §6 在人耳窗口确认。
 
 ---
 
@@ -486,7 +489,7 @@ adb -s G090LF0964340RN6 shell su -c 'cat /tmp/server.log' | grep 'voice stream c
 | rui `Credit` 配置默认 8 | `house-ear: src/house_ear/config/schema.py:242` |
 | 契约 `wait_consumed` | `house-ear: src/house_ear/device/contract.py:171-187` |
 | 小爱参考实现 `wait_consumed` | `house-ear: src/house_ear/device/xiaoai/adapter.py:223-243` |
-| adapter `play/_drain/eos/stop` | `src/rui_dot2_bridge/adapter.py:336-423` |
+| adapter `play/_start_after_prebuffer/_drain/eos/stop` | `src/rui_dot2_bridge/adapter.py:343-477`；prebuffer 常量 `98-99`，阈值 bug `376` |
 | `send_pcm/end_stream/flush` | `src/rui_dot2_bridge/device_link.py:412-439` |
 | 4096 B = 42.667 ms | `src/rui_dot2_bridge/frames.py:29-33, 58-65` |
 | 设备帧分发 `0x02/0x03` | `/tmp/echomuse-inspect/device/internal/client/data.go:940-949` |
@@ -498,4 +501,4 @@ adb -s G090LF0964340RN6 shell su -c 'cat /tmp/server.log' | grep 'voice stream c
 
 ### 一句话
 
-**先给 flush 加控制面屏障（保留 prime 旁路），再用 250–300 ms 的 adapter lead + 42.7 ms 定速 + 空档补零兜住句中 TTS 断供；`wait_consumed` 在 v2.18.1 上没有播放头可报，不能作为本次方案。**
+**A 类 406 ms 已被 idle no-op 消掉，但当前 0.45 s prebuffer 因 900 B/43200 B 的单位 bug 实际没生效；400 ms 空档现在是被 no-op 后恢复的 1.024 s 设备 prime 吸收，首声代价约 0.8–1.0 s。要低延迟：修阈值 + flush + control 面 ping/pong 屏障（保留 prime 旁路），首声约 0.5 s；要最简：保留 no-op、把 EOS 调回 1.2、接受 ~1 s。`wait_consumed` 在 v2.18.1 上没有播放头可报，不能作为本次方案。**

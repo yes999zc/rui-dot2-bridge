@@ -17,7 +17,7 @@
 | 设备 AEC | 开（`[aec] enabled: frame=512 tail=64ms`）；rui 侧 AEC 因无参考关闭 |
 | 旧 EchoMuse controller | 容器保留、默认停止（接管时会推 85/127） |
 | 8 小时 soak | 10:44 起跑，每分钟一行 `dev/rui/soak.jsonl`（M1 第 6 项） |
-| 播放预缓冲 | **0.45 s**（`DOT2_PREBUFFER_MS`），用来吸收 rui 的 TTS 分片空档；回复延迟 +~0.45 s |
+| 播放 | flush 后加 **pong 屏障**（保 prime 旁路、免跨 socket 竞态）+ **0.45 s 预缓冲**（`DOT2_PREBUFFER_MS`）；实测 `primeWait` 17–22 ms、`underruns=0`、流内 `maxGap` 123–156 ms；回复延迟 +~0.45 s |
 
 ## 2. 2026-10-24 白天修掉的真问题
 
@@ -47,8 +47,8 @@
 
 ## 4. 已知但未闭环
 
-1. **播放 400 ms 空档** → [yes999zc/rui#1](https://github.com/yes999zc/rui/issues/1)
-   （adapter 侧已兜底：空闲 flush no-op + 0.45 s 预缓冲；rui 侧更优修法见 issue 跟进评论）。
+1. ~~播放 400 ms 空档~~ → 已修：flush + pong 屏障 + 0.45 s 预缓冲（[rui#1](https://github.com/yes999zc/rui/issues/1)）。
+   rui 侧若愿意从源头改（首块前不 flush / 调大 PREBUFFER），可去掉预缓冲恢复低延迟。
 2. **P3 固件**（2ch 交出 AEC 参考）：已编译未安装（sha256 `876f63b4…`），A/B 槽可回滚，等 9 哥决定。
 3. **严格 G1**（20 次唤醒 ≥19）：修复后只有 7 次干净样本，可选补 13 次。
 4. **NAS 一次性部署**：等 M1 清单全绿（soak、plug.json、窗口）。
