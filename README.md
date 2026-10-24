@@ -51,7 +51,8 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 ## 独立测试实例（honor-nas）
 
 `<lan-ip>:8095` 上跑着一套独立的 rui 0.1.3（systemd `rui-test`），与 `.168` 生产和
-Mac dev 实例隔离；部署细节与踩坑见 [`docs/deploy-honor-nas.md`](docs/deploy-honor-nas.md)。
+Mac dev 实例隔离；部署细节与踩坑见 [`docs/deploy-honor-nas.md`](docs/deploy-honor-nas.md)，复盘（谁的锅、改正项）见
+[`docs/deploy-honor-nas-retro.md`](docs/deploy-honor-nas-retro.md)。
 
 ## 目录
 
