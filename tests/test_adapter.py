@@ -221,6 +221,16 @@ class LedTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((leds[0]["r"], leds[0]["g"], leds[0]["b"]), (0, 0, 0))
 
 
+class RefUplinkTest(unittest.IsolatedAsyncioTestCase):
+    def test_two_channel_capture_announces_the_feature(self) -> None:
+        adapter = make_adapter(mic_channels=1, ref_channels=1)
+        self.assertEqual(adapter._link_kwargs["ref_uplink"], True)
+
+    def test_mono_capture_announces_nothing(self) -> None:
+        adapter = make_adapter()
+        self.assertEqual(adapter._link_kwargs["ref_uplink"], False)
+
+
 class Volume255Test(unittest.IsolatedAsyncioTestCase):
     async def test_at_ceiling_the_projection_matches_config(self) -> None:
         adapter = make_adapter()
