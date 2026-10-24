@@ -144,6 +144,17 @@ class Dot2Adapter(DeviceAdapter):
         self._frame_buffer = bytearray()
         self._eos_task: asyncio.Task[None] | None = None
         self._playing = False
+        # Device-side AEC/DSP knobs (None = firmware default).
+        _tail = os.environ.get("DOT2_AEC_TAIL_MS", "").strip()
+        _delay = os.environ.get("DOT2_AEC_DELAY_MS", "").strip()
+        _agc = os.environ.get("DOT2_AGC_ENABLED", "").strip().lower()
+        _barge = os.environ.get("DOT2_BARGE_IN_ENABLED", "").strip().lower()
+        _barge_thr = os.environ.get("DOT2_BARGE_IN_THRESHOLD", "").strip()
+        self._aec_tail_ms = int(_tail) if _tail else None
+        self._aec_delay_ms = int(_delay) if _delay else None
+        self._agc_enabled = None if not _agc else _agc not in ("0", "false", "no", "off")
+        self._barge_in_enabled = None if not _barge else _barge not in ("0", "false", "no", "off")
+        self._barge_in_threshold = int(_barge_thr) if _barge_thr else None
         self._link: DeviceLink | None = None
         self._link_kwargs = {
             "certs_dir": Path(secrets_dir),
@@ -155,6 +166,11 @@ class Dot2Adapter(DeviceAdapter):
             "push_config": push_config,
             "aec_enabled": aec_enabled,
             "ref_uplink": self.ref_channels > 0,
+            "aec_tail_ms": self._aec_tail_ms,
+            "aec_delay_ms": self._aec_delay_ms,
+            "agc_enabled": self._agc_enabled,
+            "barge_in_enabled": self._barge_in_enabled,
+            "barge_in_threshold": self._barge_in_threshold,
             "oww_on_device": oww_on_device,
         }
         self._inject_port = inject_port
