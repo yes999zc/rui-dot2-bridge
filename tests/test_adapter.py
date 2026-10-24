@@ -42,6 +42,7 @@ class FakeLink:
         self.stats = FakeStats()
         self.info = FakeInfo()
         self.volume_level = 38
+        self.reported_level = 38
         self.volume_cap_percent = 30.0
         self.aec_enabled = True
 
@@ -212,6 +213,18 @@ class Volume255Test(unittest.IsolatedAsyncioTestCase):
     async def test_read_volume_returns_the_255_projection(self) -> None:
         adapter = make_adapter()
         self.assertEqual(await adapter.read_volume(), round(30 * 255 / 100))
+
+    async def test_high_cap_does_not_report_a_low_device_as_full(self) -> None:
+        # Regression: capped_level() was called without the cap, so with cap=100 a
+        # device still at level 38 looked like "at the ceiling" and reported 255.
+        adapter = make_adapter(volume_cap_percent=100)
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        link.reported_level = 38
+        self.assertEqual(adapter.volume_255(), 76)
+        link.reported_level = 89
+        self.assertEqual(adapter.volume_255(), round(89 * 255 / 127))
+        link.reported_level = 127
+        self.assertEqual(adapter.volume_255(), 255)
 
 
 class CeilingTest(unittest.IsolatedAsyncioTestCase):

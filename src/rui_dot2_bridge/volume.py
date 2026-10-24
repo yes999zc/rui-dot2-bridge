@@ -4,8 +4,9 @@ The device's level is the codec's own 0.5 dB/step law, 0 = -63.5 dB and
 127 = unity gain (0 dB). Above 127 the DAC saturated, which is why the
 firmware stops there.
 
-The user's standing rule is that this speaker must never be louder than 30 %,
-so the cap lives here and every path goes through it: the value set at
+The ceiling is configured per deployment (``DOT2_VOLUME_CAP``). It started at
+30 % for the overnight runs, where 30 % turned out to be -44.5 dB and inaudible;
+this deployment runs at 100 %. Every path goes through the cap: the value set at
 connect, what a reply asks for, and what the physical buttons produce on the
 device (the link pushes it back down).
 """

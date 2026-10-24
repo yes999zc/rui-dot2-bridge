@@ -33,7 +33,7 @@ from .control import start_control_server
 from .device_link import DeviceLink
 from .dsp import LoudnessProcessor, fade_out_pcm
 from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE
-from .volume import VOLUME_CAP_PERCENT, capped_level, clamp_percent
+from .volume import DEVICE_LEVEL_MAX, VOLUME_CAP_PERCENT, clamp_percent
 
 log = logging.getLogger(__name__)
 
@@ -206,12 +206,22 @@ class Dot2Adapter(DeviceAdapter):
     # volume every cycle. At the ceiling the answer is the ceiling's 0-255
     # projection; anywhere else it is the device level scaled across.
     def volume_255(self) -> int | None:
+        """The device's *actual* level, projected onto rui's 0-255 scale.
+
+        Two bugs lived here (audit 2026-10-24): the ceiling comparison called
+        ``capped_level()`` without passing the cap, so its default 30 % made a
+        level-38 device look like "at the ceiling" and report 100 % whenever the
+        real cap was higher; and the value was taken from the target rather than
+        the device's last report, so pressing the physical volume key never moved
+        the console. Projecting the reported level makes 127 -> 255 and 38 -> 76
+        regardless of the configured ceiling.
+        """
         if self._link is None:
             return None
-        ceiling = round(self.volume_cap_percent * 255 / 100)
-        if self._link.volume_level == capped_level(self.volume_cap_percent):
-            return ceiling
-        return round(self._link.volume_level * 255 / 127)
+        level = getattr(self._link, "reported_level", None)
+        if level is None:
+            level = self._link.volume_level
+        return round(max(0, min(DEVICE_LEVEL_MAX, int(level))) * 255 / DEVICE_LEVEL_MAX)
 
     async def read_volume(self) -> int | None:
         return self.volume_255()
