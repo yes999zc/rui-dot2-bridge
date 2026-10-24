@@ -136,7 +136,7 @@ class PlaybackTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_idle_sends_padded_tail_and_eos(self) -> None:
         await self.adapter.play(bytes(5000), sample_rate=48000, channels=1)
-        await asyncio.sleep(0.6)  # EOS_IDLE_S is 0.4
+        await asyncio.sleep(1.5)  # EOS_IDLE_S is 1.2
         self.assertEqual(self.link.eos, 1)
         self.assertEqual(len(self.link.sent), 2)
         self.assertEqual(len(self.link.sent[-1]), SPEAKER_CHUNK_BYTES)  # tail padded
@@ -145,7 +145,7 @@ class PlaybackTest(unittest.IsolatedAsyncioTestCase):
         await self.adapter.play(bytes(5000), sample_rate=48000, channels=1)
         await self.adapter.stop_playback()
         self.assertEqual(self.link.flushed, 1)
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(1.5)
         self.assertEqual(self.link.eos, 0)  # the idle EOS must not fire after a stop
 
 
