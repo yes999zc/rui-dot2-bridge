@@ -451,6 +451,7 @@ def build(dev, cfg) -> Dot2Adapter:  # noqa: ANN001 - rui's DeviceConfig/Config
     token_env = getattr(dev, "token_env", None)
     if token_env:
         token = os.environ.get(token_env) or None
+    mute = os.environ.get("DOT2_MUTE", "").strip().lower() in ("1", "true", "yes", "on")
     aec_env = os.environ.get("DOT2_AEC_ENABLED", "1").strip().lower()
     inject = os.environ.get("DOT2_INJECT_PORT", "").strip()
     mic_channels = int(os.environ.get("DOT2_MIC_CHANNELS", "1") or 1)
@@ -466,7 +467,11 @@ def build(dev, cfg) -> Dot2Adapter:  # noqa: ANN001 - rui's DeviceConfig/Config
         ),
         tls_port=int(getattr(dev, "listen_port", None) or DEFAULT_TLS_PORT),
         token=token,
-        volume_cap_percent=float(os.environ.get("DOT2_VOLUME_CAP", VOLUME_CAP_PERCENT)),
+        # Mute = the ceiling itself becomes 0, so every path (connect, reconciler,
+        # physical buttons) lands on level 0 and the device stays silent while
+        # wake/ASR/barge keep working. Flip DOT2_MUTE off and restart to unmute.
+        volume_cap_percent=0.0 if mute else float(
+            os.environ.get("DOT2_VOLUME_CAP", VOLUME_CAP_PERCENT)),
         aec_enabled=aec_env not in ("0", "false", "no", "off"),
         inject_port=int(inject) if inject else None,
         mic_channels=mic_channels,
