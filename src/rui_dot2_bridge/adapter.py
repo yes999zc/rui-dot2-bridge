@@ -457,6 +457,7 @@ class Dot2Adapter(DeviceAdapter):
         that barrier the device accepted the first two blocks and then discarded
         them on the late flush: 406 ms hole at the start of 11/11 replies.
         """
+        active = self._playing or bool(self._frame_buffer)
         if self._eos_task is not None:
             self._eos_task.cancel()
             self._eos_task = None
@@ -469,6 +470,12 @@ class Dot2Adapter(DeviceAdapter):
         self._flush_dump()
         if self._link is not None:
             await self._link.flush()
+            if active:
+                # The flush discards buffered audio but leaves the device's
+                # discarding state set; the EOS clears it. Without this a cue
+                # stopped mid-play could swallow the next reply's first frames
+                # (2026-10-24 review). Both ride the data socket, in order.
+                await self._link.end_stream()
 
     async def set_volume(self, volume: int) -> None:
         """rui's 0-100, capped at the owner's ceiling before it reaches the device."""
