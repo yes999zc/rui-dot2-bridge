@@ -95,3 +95,21 @@
 设备默认 mic 预增益 24 dB，正常说话就顶到 1.0000（7 次里 6 次削波）。adapter 通过配置推送
 `micGainDb=18` 后，语音段峰值 0.70–0.88、0/5 削波；设备 VAD 阈值也从 0.01585 自动降到 0.00794。
 该值由 `DOT2_MIC_GAIN_DB` 控制，恢复默认用 24。
+
+
+## 2026-10-24 · 播放"卡"（~400 ms 空档）：两段根因
+
+详见 rui issue #1 的跟进评论。只读调研（`docs/stutter-rui-xiaoai.md`）把问题拆成两段：
+
+1. **每轮回复开头的 flush 竞态**：rui 在首块音频前调用 `stop_playback()`
+   （`house-ear audio/process.py:1108`）；dot2 adapter 的 `speaker_flush` 走 control WS、
+   PCM 走 data WS，两条连接无序。设备先收 2×100 ms 块、才处理到 flush，丢弃并结束流，
+   下一段重新 prime，服务端被反压 406 ms。证据：11/11 次空档都在第 2 块之后，
+   406/407/417 ms；同秒设备日志 `speaker_flush` + `periods=4 recvSpan=5ms`。
+   **修法**：空闲时 `stop_playback()` no-op（不再发 flush）。
+2. **TTS 分片到达节奏**：每条回复先到 ~200 ms 音频，~407 ms 后其余部分成批到达；
+   rui `Pacer` 预存上限 320 ms（部分路径 250 ms），不足以覆盖。
+   **修法**：adapter 加 0.45 s 预缓冲（`DOT2_PREBUFFER_MS`，短回复 0.35 s 后强制开始）。
+
+修复后：calls.log 无 400 ms 级块间空档；设备流 `underruns=0`、`maxGap≈700 ms`（EOS 尾部静音）。
+代价：回复延迟 +约 0.45 s。EOS 空闲同时从 1.2 s 收到 0.7 s，减少结尾死等。

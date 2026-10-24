@@ -249,14 +249,13 @@ if 空闲（not _playing and not _frame_buffer）:
     link.flush()                 # 故意 arm eosPending，旁路 1.024 s prime
     await link.control_barrier() # 保证 flush 先处理
 else:
-    link.flush()                 # 丢掉设备深度队列
+    link.flush()                 # 丢掉设备深度队列，并 arm discarding/eosPending
     link.end_stream()            # 清 discarding（EOS 是 disarm 的唯一方式）
-    link.flush()                 # 再次 arm eosPending（active 已 false）
-    await link.control_barrier()
+    await link.control_barrier() # EOS 之后 eosPending 仍为 true，prime 旁路保留
 清本地 _frame_buffer / 取消 _eos_task / _playing=False
 ```
 
-顺序理由：设备 `flush()` 在 `active` 时会 arm `discarding`，只有 `endStream()` 能清掉；`endStream()` 在 `wasDiscarding` 时不设 `eosPending`，所以要再 `flush()` 一次来恢复 prime 旁路。空闲时没有 active 流，一次 flush 就够。
+顺序理由：设备 `flush()` 在 `active` 时会 arm `discarding`，同时无条件把 `eosPending` 置 true；`endStream()` 清掉 `discarding`，但因为它看到 `wasDiscarding=true`，不会再改 `eosPending`，所以 **EOS 之后 `eosPending` 仍为 true**，不需要第三次 flush。空闲时没有 active 流，一次 flush 就够。
 
 代价：每次回复多一个 control RTT（本机/局域网约 5–50 ms）。收益：A 类 406 ms 消失；保留首声速度；不引入 1 s prime 延迟。
 
@@ -268,7 +267,7 @@ else:
 
 | 参数 | 建议值 | 理由 |
 |---|---:|---|
-| `DOT2_PLAYBACK_LEAD_MS` | **250**（默认）；可设 300/400 | 250 + 设备 ALSA 170.7 ≈ 421 ms；覆盖 400 ms 空档只剩 21 ms，偏紧；**300** 更稳（总 471 ms）。400 是保守值，+400 ms 延迟 |
+| `DOT2_PLAYBACK_LEAD_MS` | **300**（默认）；可设 250/400 | 300 + 设备 ALSA 170.7 ≈ 471 ms；覆盖 400 ms 空档有 ~71 ms 余量。250 只剩 ~21 ms，偏紧；400 是保守值，+400 ms 延迟 |
 | `LEAD_MAX_WAIT_MS` | 400–500 | 短回复不能为凑目标无限等 |
 | `FRAME_MS` | **42.667** | 与设备 period 对齐；用绝对 deadline 累加，避免 drift |
 | `EOS_IDLE_S` | 保持 1.2 | 设备尾部 ~213 ms，1.2 s 足够；改大只会拖慢音乐恢复 |
@@ -327,7 +326,6 @@ async def stop_playback(self, fade_ms: int = 120) -> None:
     if self._playing or self._frame_buffer:
         await self._link.flush()
         await self._link.end_stream()
-        await self._link.flush()
     else:
         await self._link.flush()
     await self._link.control_barrier()
@@ -336,7 +334,7 @@ async def stop_playback(self, fade_ms: int = 120) -> None:
     self._flush_dump()
 ```
 
-注意：`end_stream()` 后必须再 `flush()` 才能重新 arm `eosPending`；否则下一流会走 1.024 s prime。若未来固件修了 `eosPending` 语义，这一步可以删。
+注意：`flush()` 已经把 `eosPending` 置 true；`end_stream()` 只负责在 `active` 时清掉 `discarding`，不会再改 `eosPending`。所以 `flush → EOS → 屏障` 就够了，不需要第二次 flush。若未来固件把 `eosPending` 语义拆开，这一段可以简化。
 
 ### 5.3 P1：`PlaybackSender` 状态机
 
@@ -443,7 +441,7 @@ adb -s G090LF0964340RN6 shell su -c 'cat /tmp/server.log' | grep 'voice stream c
 ## 7. 风险与开放问题
 
 1. **P0 屏障的 RTT**：本机/局域网 5–50 ms；如果 control WS 拥塞或设备忙，超时 300 ms 会拖慢首声；需要超时后继续（只告警），不能阻塞回复。
-2. **P0 的 flush→EOS→flush 顺序**：在真机上要确认 `endStream()` 确实清掉 `discarding`（源码如此），以及第二次 flush 不会把新流的数据也丢弃（它发生在首帧之前，active=false）。
+2. **P0 的 flush→EOS 顺序**：在真机上要确认 `endStream()` 确实清掉 `discarding`（源码如此），并且 EOS 之后 `eosPending` 仍为 true（`flush` 已置位，`endStream` 在 `wasDiscarding` 时不改），这样下一流仍走 prime 旁路。
 3. **P1 不能创造音频**：连续多次空档或 TTS 平均慢于实时时，lead 仍会耗尽；补零只能防止二次 prime，不能消除源空档。需要监控 `underrun_frames`。
 4. **短回复**：`LEAD_MAX_WAIT` 要保证“在只收到一块时也能在 ~400–500 ms 内开声”；否则短回复延迟会比现在明显。
 5. **EOS/stop 竞态**：sender task、`_eos_after_idle`、`stop_playback` 三者只能有一个 owner；建议用 `_gen` + 单一 sender 任务，删掉独立的 `_eos_task`。
