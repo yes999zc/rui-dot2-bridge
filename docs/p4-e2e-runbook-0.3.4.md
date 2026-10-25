@@ -23,9 +23,13 @@
 speaker_connected=true；日志有 "dot2 link: dot2 registered"；可有且仅有 1 条
 "device_wake ... fallback to RUI KWS"（预期）。
 
-## 2. 自动回路段（AEC 关，验证管线与时延）
+## 2. 自动回路段（仅对"设备 AEC 关闭/无 AEC"的拓扑）
 
-> 目的：无人值守验证 唤醒→ASR→LLM→TTS→播放 与 打断，**不代表生产声学配置**。
+> 目的：无人值守验证管线与时延，**不代表生产声学配置**。
+>
+> ⚠️ 本设备的 EchoMuse **设备 AEC 会抵消它自己喇叭的声音**（voice-pipeline Stage 3）。
+> 实测：从 Dot 喇叭注入"你好小瑞"，KWS 唤醒 0 次——这条自动唤醒回路在本拓扑**不可用**。
+> 唤醒/打断只能真人发声（§3）。注入钩子仍可用于验证播放链路与指标。
 
 1. 以测试开关重启（可回滚，见 §5）：在 ~/rui/.env 增加
 
@@ -35,11 +39,15 @@ speaker_connected=true；日志有 "dot2 link: dot2 registered"；可有且仅�
 
    然后 docker compose up -d
 
-2. 唤醒+命令（音档在 ~/rui/data/media/，注入钩子把 WAV 从 Dot 喇叭放出来，被 Dot 麦克风听到）：
+2. 播放链路的注入验证（注入钩子是**裸 TCP JSON 行协议**，不是 HTTP；音档在 ~/rui/data/media/）：
 
-       curl -s -X POST 127.0.0.1:8871 -d '{"wav":"/var/lib/rui/media/wake.wav"}'
-       sleep 1.2
-       curl -s -X POST 127.0.0.1:8871 -d '{"wav":"/var/lib/rui/media/cmd.wav"}'
+       python3 -c "
+       import json,socket,sys
+       s=socket.create_connection(('127.0.0.1',8871),timeout=10)
+       s.sendall(json.dumps({'wav':'/var/lib/rui/media/wake.wav'}).encode()+b'\n')
+       print(s.recv(4096).decode().strip()); s.close()"
+
+   注意：它把 WAV 从 Dot 喇叭放出来，设备 AEC 会抵消，所以不会唤醒——只用来确认播放路径与指标。
 
    期望：日志出现 KWS 唤醒（"你好小瑞"）→ 转录含"几点" → 回复 → playback 指标 periods>0、underruns=0。
 
