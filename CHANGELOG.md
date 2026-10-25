@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — rui 0.5.2 验证
+
+### Added
+
+- `docs/contract-report-0.5.2.json`：官方 `rui plug-test` 在 **0.5.2** 上 **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**，22 项逐项与 0.5.1 一致（仅版本字符串与时间戳不同）。
+- 版本钉从 0.5.1 更新到 **0.5.2**（README 徽章/构建示例、`docs/agent-install.md`、`deploy/downstream/README.md`、`deploy/downstream/Dockerfile` 的 `ARG RUI_IMAGE` 默认值、`docker-compose.yml` 默认 `image`）；`devices/rs03qr.yaml` 的 `tested_with` 追加 `0.5.2`。
+
+### Verified（真机，`.34` + Echo Dot 2 / EchoMuse `20261024-1911-dev`）
+
+- `POST /api/v1/devices/dot2/test` → `ok:true`、`transport:inbound`、host 检查 `not_applicable`（Dot 2 无 SSH，不再误判）、token 检查 `managed_by_adapter:true`、`listen_port:8870`；
+- `GET /api/v1/devices/dot2/status` → `ready:true`、`errors:[]`（不再 `token_missing`）；
+- 真实回合：`audio_bytes=810130`、`playback_gap_count=0`；容器重建后设备 **10.7 s** 重连（≤60 s 判据）。
+- 无 adapter 代码改动，`rui_compat ">=0.3.0 <0.6.0"` 不变。
+
 ## Unreleased — 跟随 rui 0.5.1
 
 ### Changed

@@ -24,7 +24,7 @@ Build on the target architecture (the test host is x86_64; an arm64 Mac cannot
 
 ```bash
 # on the deploy host, from a checkout/sync of this repo
-docker build -f deploy/downstream/Dockerfile -t rui-dot2:0.5.1 .
+docker build -f deploy/downstream/Dockerfile -t rui-dot2:0.5.2 .
 ```
 
 Upgrade = rebuild this layer on a new base tag; `docker compose up -d` again.
@@ -33,7 +33,7 @@ Upgrade = rebuild this layer on a new base tag; `docker compose up -d` again.
 
 ```bash
 # 1. materials next to this file: config/, data/, dot2-secrets/ (0600), .env
-# 2. compose override: RUI_IMAGE=rui-dot2:0.5.1 and RUI_UID/RUI_GID of the host user
+# 2. compose override: RUI_IMAGE=rui-dot2:0.5.2 and RUI_UID/RUI_GID of the host user
 docker compose -f docker-compose.yml up -d
 ```
 

@@ -18,7 +18,7 @@
 不要猜，逐项问清楚；缺任何一项都先停下来：
 
 1. **rui 宿主**：ssh 字符串或本机（`user@host`），部署目录（例如 `~/rui`）。
-2. **rui 版本/镜像**：目标 tag（推荐 `ghcr.io/yes999zc/rui:0.5.1` 或更新的 patch），是否已经在本机。
+2. **rui 版本/镜像**：目标 tag（推荐 `ghcr.io/yes999zc/rui:0.5.2` 或更新的 patch），是否已经在本机。
 3. **设备**：Echo Dot 2 的局域网 IP、EchoMuse 固件版本、是否已经解锁/刷好。
 4. **设备凭据**：`ca.pem` / `server.pem` / `server.key` / `device_token` 在哪（不要打印内容）。
 5. **网络**：设备能访问宿主的 8870；宿主 8080 是否需要对局域网开放。
@@ -56,19 +56,19 @@ git log -1 --oneline
 
 ```bash
 docker run --rm --entrypoint python -e PYTHONPATH=/opt/rui-plugins \
-  -v "$PWD/src:/opt/rui-plugins:ro" ghcr.io/yes999zc/rui:0.5.1 \
+  -v "$PWD/src:/opt/rui-plugins:ro" ghcr.io/yes999zc/rui:0.5.2 \
   -m rui plug-test /opt/rui-plugins/rui_dot2_bridge \
   --adapter rui_dot2_bridge.adapter:build --json | tee /tmp/plug-test.json
 ```
 
-要求：**0 FAIL**；WARN/SKIP 与 `docs/contract-report-0.5.1.json` 一致（2 WARN / 5 SKIP 属预期：probe 无真机、inbound 真机 I/O）。
+要求：**0 FAIL**；WARN/SKIP 与 `docs/contract-report-0.5.2.json` 一致（2 WARN / 5 SKIP 属预期：probe 无真机、inbound 真机 I/O）。
 
 ### 3.3 构建下游镜像（x86_64 宿主）
 
 ```bash
 # 必须用 legacy builder：BuildKit 在部分 NAS 上会卡住
 DOCKER_BUILDKIT=0 docker build -f deploy/downstream/Dockerfile \
-  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.5.1 -t rui-dot2:0.5.1 .
+  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.5.2 -t rui-dot2:0.5.2 .
 docker images | grep rui-dot2        # 期望 ≈368 MB
 ```
 
@@ -82,14 +82,14 @@ chmod 700 <部署目录>/dot2-secrets
 ```
 
 compose 用 `deploy/downstream/docker-compose.yml` 为模板：**去掉 `build:` 段**（镜像已预构建）、
-把 `image:` 指向 `rui-dot2:0.5.1`、保留 `./config ./data ./dot2-secrets` 三个挂载与 host 网络。
+把 `image:` 指向 `rui-dot2:0.5.2`、保留 `./config ./data ./dot2-secrets` 三个挂载与 host 网络。
 
 ### 3.5 写 `.env`（敏感值从用户给的凭据文件取，**不要打印**）
 
 关键项：
 
 ```dotenv
-RUI_IMAGE=rui-dot2:0.5.1
+RUI_IMAGE=rui-dot2:0.5.2
 RUI_UID=1000
 RUI_GID=1000
 RUI_LLM_KEY=...            # 从用户已有的 rui .env 迁移，或询问
