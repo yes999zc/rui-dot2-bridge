@@ -1,0 +1,30 @@
+schema: rui-device/v1
+id: dot2
+model: "RS03QR"
+name: "Echo Dot 2 (EchoMuse firmware)"
+vendor: "Amazon / EchoMuse"
+class: B
+transport: inbound
+protocol: {kind: wss, version: "1"}
+capabilities: [playback, led, volume, keys, device_wake, barge_via_device]
+wake: {source: device, barge_via_device: true}
+device_side:
+  artifact: firmware
+  name: "EchoMuse device firmware (RS03QR)"
+  source: "https://github.com/yes999zc/echomuse-dot2-ref"
+  version_min: "v2.18.1"
+  install_steps:
+    - "Unlock the Dot 2 and install the EchoMuse device firmware (v2.18.1 or newer)."
+    - "Keep the existing EchoMuse TLS material and X-EM-Token; the adapter reuses them unchanged."
+    - "Configure the same wake words as RUI on the device (see params.wake_words)."
+    - "Enable on-device wake only after pushing a matching OWW model; stock firmware has no model for these words."
+  rollback: "Boot the original firmware slot (server_a) from the device A/B partitions and point its controller URL back at the previous EchoMuse controller."
+runtime: {mode: in-process, entrypoint: "rui_dot2_bridge.adapter:build", listen_port: 8870, token_env: DOT2_EM_TOKEN}
+params:
+  - {key: host, label: "音箱地址", type: string, required: true, placeholder: "<speaker-host>"}
+  - {key: room, label: "房间名", type: string, default: "客厅"}
+  - {key: wake_words, label: "唤醒词", type: list, default: ["你好小瑞"], max: 3}
+  - {key: port, label: "入站端口", type: int, default: 8870, help: "EchoMuse wss listen port; the device dials this port."}
+  - {key: oww_model, label: "设备端唤醒模型", type: string, default: "", help: "Only set when a matching OWW model was pushed to the device; empty keeps RUI KWS."}
+compatibility: {rui_min: "0.3.0", tested_with: ["0.3.4"], notes: "device_wake is opt-in: it needs a device-side OWW model for the configured wake words; no reference channel (device AEC)."}
+acceptance: {verified: false, last_verified: "", evidence: "Contract kit report: artifacts/contract-report.json (rui 0.3.4). Live-device acceptance pending."}

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rui-dot2-bridge"
-version = "0.1.0"
-description = "Echo Dot 2 as a rui satellite: device-protocol adapter that replaces the EchoMuse controller"
+version = "0.2.0"
+description = "Echo Dot 2 as a rui satellite: Socket & Plug v1 adapter for the EchoMuse device protocol"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
@@ -13,13 +13,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
+# rui itself is supplied by the official image (the plug runs in-process there);
+# do not add it here: the PyPI `rui` project is unrelated. See README/tests notes.
+dev = ["pytest>=8", "PyYAML>=6", "ruff>=0.5"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Ship the v1 manifest with the package: rui device/loader.py discovers
+# plugin.yaml next to the adapter module, and the downstream image copies only
+# this package directory. Without package-data an sdist/wheel would drop it.
+[tool.setuptools.package-data]
+rui_dot2_bridge = ["plugin.yaml", "devices/*.yaml"]
 
 [tool.ruff]
 line-length = 100
@@ -31,4 +39,5 @@ ignore = ["E501"]  # same as rui's own config; long lines are reviewed, not foug
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 addopts = "-q"

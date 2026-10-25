@@ -1,0 +1,62 @@
+# rui + dot2 plug (downstream image). Mirrors upstream docker-compose.yml so a
+# vanilla 0.2.x/0.3.x install can be switched to the downstream image without
+# changing config/, data/ or the host-network contract.
+#
+#   docker compose -f docker-compose.yml up -d
+#
+# The image is built from this repo (deploy/downstream/Dockerfile); see README.md.
+name: rui
+
+services:
+  rui:
+    image: ${RUI_IMAGE:-rui-dot2:0.3.4}
+    build:
+      context: ../..
+      dockerfile: deploy/downstream/Dockerfile
+      args:
+        RUI_IMAGE: ${RUI_BASE_IMAGE:-ghcr.io/yes999zc/rui:0.3.4}
+    container_name: rui
+    restart: unless-stopped
+    network_mode: host
+    user: "${RUI_UID:-1000}:${RUI_GID:-1000}"
+    env_file:
+      - .env
+    volumes:
+      - ./config:/config
+      - ./data:/var/lib/rui
+      - ./data/models:/data/models
+      # EchoMuse TLS material (ca.pem / server.pem / server.key / device_token),
+      # mode 0600, never in git and never baked into the image.
+      - ./dot2-secrets:/opt/rui-secrets:ro
+    environment:
+      RUI_CONFIG: /config/config.yaml
+      RUI_WEB_DIR: /app/web/dist
+      RUI_STATE_DIR: ${RUI_STATE_DIR:-/var/lib/rui/state}
+      RUI_AUDIO_SOCK: ${RUI_AUDIO_SOCK:-${RUI_STATE_DIR:-/var/lib/rui/state}/audio.sock}
+      RUI_CHANNEL_DATA: ${RUI_CHANNEL_DATA:-${RUI_STATE_DIR:-/var/lib/rui/state}/channels}
+      HOME: /var/lib/rui
+      # --- downstream adapter layer (must stay operator-owned, never user input) ---
+      PYTHONPATH: /opt/rui-plugins
+      RUI_ADAPTER_PLUGINS: dot2=rui_dot2_bridge.adapter:build
+      DOT2_SECRETS_DIR: /opt/rui-secrets
+      # Loudness output must live on the data volume: the root filesystem is read-only.
+      DOT2_LOUDNESS_FILE: /var/lib/rui/loudness.json
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "/usr/local/bin/rui-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+    stop_grace_period: 20s

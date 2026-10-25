@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -64,6 +65,94 @@ class BuildDefaultsTest(unittest.TestCase):
             adapter = build(self.device(), None)
         self.assertEqual(adapter.volume_cap_percent, 55.0)
         self.assertEqual(adapter._prebuffer_ms, 300)
+
+
+class BuildParamsTest(unittest.TestCase):
+    """DeviceConfig (and its params) outranks DOT2_* env, which outranks nothing."""
+
+    def device(self, **overrides) -> SimpleNamespace:
+        values = {
+            "id": "dot2",
+            "host": "devhost",
+            "room": "",
+            "secrets_dir": "secrets",
+            "listen_port": None,
+            "token_env": None,
+            "params": {},
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def env(self, extra: dict | None = None):
+        clean = {key: value for key, value in os.environ.items() if not key.startswith("DOT2_")}
+        if extra:
+            clean.update(extra)
+        return patch.dict(os.environ, clean, clear=True)
+
+    def test_device_params_win_over_env(self) -> None:
+        device = self.device(
+            host="",
+            token_env="DOT2_EM_TOKEN",
+            params={
+                "host": "paramhost",
+                "room": "书房",
+                "port": 9001,
+                "plug_id": "dot2-echomuse",
+                "oww_model": "hey_rui.onnx",
+            },
+        )
+        with self.env(
+            {
+                "DOT2_HOST": "envhost",
+                "DOT2_ROOM": "envroom",
+                "DOT2_LISTEN_PORT": "9002",
+                "DOT2_EM_TOKEN": "tok",
+            }
+        ):
+            adapter = build(device, None)
+        self.assertEqual(adapter.host, "paramhost")
+        self.assertEqual(adapter.room, "书房")
+        self.assertEqual(adapter._link_kwargs["tls_port"], 9001)
+        self.assertEqual(adapter.plug_id, "dot2-echomuse")
+        self.assertEqual(adapter.oww_model, "hey_rui.onnx")
+        self.assertEqual(adapter.oww_on_device, "on")
+        self.assertEqual(adapter._link_kwargs["token"], "tok")
+        self.assertIsNotNone(adapter._link_kwargs["wake_queue"])
+
+    def test_device_config_wins_over_params_and_env(self) -> None:
+        device = self.device(
+            listen_port=7000,
+            token_env="DOT2_EM_TOKEN",
+            params={"host": "paramhost", "port": 9001},
+        )
+        with self.env(
+            {"DOT2_HOST": "envhost", "DOT2_LISTEN_PORT": "9002", "DOT2_EM_TOKEN": "tok"}
+        ):
+            adapter = build(device, None)
+        self.assertEqual(adapter.host, "devhost")
+        self.assertEqual(adapter._link_kwargs["tls_port"], 7000)
+
+    def test_token_env_outranks_the_secrets_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "device_token").write_text(" filetok \n", encoding="utf-8")
+            device = self.device(secrets_dir=directory, token_env="DOT2_EM_TOKEN")
+            with self.env({"DOT2_EM_TOKEN": "envtok"}):
+                adapter = build(device, None)
+        self.assertEqual(adapter._link_kwargs["token"], "envtok")
+
+    def test_token_falls_back_to_the_secrets_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "device_token").write_text(" filetok \n", encoding="utf-8")
+            device = self.device(secrets_dir=directory, token_env="DOT2_EM_TOKEN")
+            with self.env():
+                adapter = build(device, None)
+        self.assertEqual(adapter._link_kwargs["token"], "filetok")
+
+    def test_device_wake_is_off_unless_a_model_is_configured(self) -> None:
+        with self.env():
+            adapter = build(self.device(), None)
+        self.assertEqual(adapter.oww_on_device, "off")
+        self.assertFalse(adapter._push_oww)
 
 
 if __name__ == "__main__":
