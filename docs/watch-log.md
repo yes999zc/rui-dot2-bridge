@@ -51,6 +51,8 @@
 | 2026-10-25 16:40 | 9 哥定：测试暂停（新会话统一调度，另有 1×LX06 + 4–5×Dot2 待部署）；**盯 rui v0.5.0 对外发布版**，每 30 min 扫描；发布后在 .34 做完全干净安装（安装专用 agent → Lead 填配置），安装问题单独开 issue。设备端唤醒路线 B 的资产/打分器已真机验证、adapter 改动已提交，`.34` 已恢复到稳定 `rui-dot2:0.4.2` |
 | 2026-10-25 16:37 | rui 回复 `rui_compat` 口径：**0.5.0 要求上界改到 `<0.6.0`**（range 语义不变，匹配 `rui.__version__`）；确认 **0.5.0 无设备/插件契约变更**（Phase 2 全在 rui 内部）；发布时在 #7 公布 tag + GHCR digest + 平台，并先补 `docs/deploy.md` 下游适配器一节。#11 同时确认：候选→合并→准入链完全在 rui 内部、流式 `oww_wake` 形态继续成立、barge 仍由 rui enrich |
 | 2026-10-25 16:45 | 我们已把 `plugin.yaml` 抬到 **1.1.2 / `>=0.3.0 <0.6.0`**，`tested_with` 补到 0.4.2；在 0.4.2 上重跑 plug-test **15/0/2/5**（`docs/contract-report-0.4.2-plugin-1.1.2.json`）；已 push。9 哥授权：**v0.5.0 出现即开跑干净安装**，不再等确认 |
+| 2026-10-25 18:03 | **v0.5.0 已发布且可拉**：tag `v0.5.0`→`406785e`，GHCR `0.5.0`=`0.5`=`latest`=`sha-406785e`，digest `sha256:01a3afe1…`；本机 `docker pull` 后 `RepoDigests` 与该 digest 完全一致。`plug-test` on **0.5.0**：**15 PASS / 0 FAIL / 2 WARN / 5 SKIP**（`docs/contract-report-0.5.0.json`）→ 上界 `<0.6.0` 生效、契约零差异。0.5.0 内容：config v3（`devices[].audio` 每设备覆盖 + `post_playback_mute_ms`）、Phase 2 多平面/仲裁（**`multi_device.enabled=false` 时与 0.4.x 逐字节一致**）、per-plane health、token/healthcheck/install 打磨；**adapter/plug 契约无变化** |
+| 2026-10-25 18:05 | **开始干净安装**：`.34` 已备份并清空（`~/rui-pre-0.5.0-20261025-180528/`：旧 `~/rui` 全量 + 0.4.2 镜像 tar + before 证据 + home 下 rui 相关遗留物），旧镜像/构建目录已删，只留 `ghcr.io/yes999zc/rui:0.5.0`。已派 **install-only fresh agent**（零项目背景、只读上游 v0.5.0 材料）装 vanilla，完成后由 Lead 填配置与 adapter 层 |
 
 ### 2026-10-25 15:27 — v0.4.2 发布（tag + digest + 4 项清单），多设备仲裁冻结
 
