@@ -47,7 +47,7 @@ Dot 2 已作为 **rui 0.4.2** 卫星跑通（.34：vanilla 0.4.2 冷启动 + 下
    healthcheck 提示、回滚数据）——见 `docs/switch-0.4.2-report.md`；
 3. `ready=false / token_missing` 显示口径修法三选一（启动注入 `DOT2_EM_TOKEN` / manifest 回默认 `RUI_DEVICE_TOKEN` / 上游支持文件来源）；
 4. 音量偏小（9 哥实测）属我们 adapter 的 loudness/EQ 链路，后续单独调，不阻塞上游；
-5. `.34` 控制台 auth token 轮换一次（会话记录里出现过值，未外传）。
+5. `.34` 控制台 auth token 已于 16:06 轮换（旧值在会话记录里出现过，未外传；轮换后容器重建、新 token 验证 200）。
 
 ## 必读文件
 
