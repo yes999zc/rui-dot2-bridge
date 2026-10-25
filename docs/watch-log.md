@@ -44,3 +44,29 @@
 - **监控口径**：`latest` 随 main 走、digest 会变；0.4.x 固定映射 `0.4` 与 release 版本；冷启动仍以 **tag `0.4.2` + 可拉 digest** 为唯一触发条件。
 | 2026-10-25 15:00 | **巡检停止**（9 哥指示"停止扫描"）：已删除 cron `schedule-f95e2991`、rui-watch 收工、task-5 完成。最后有效扫描为 12:00（v0.4.1 可用、0.4.2 未出现）。之后如需上游状态，手动跑 `python3 scripts/watch_upstream.py` 即可（脚本与 runbook 保留） |
 | 2026-10-25 15:20 | 新建 [rui#11](https://github.com/yes999zc/rui/issues/11)：**多设备/多卫星仲裁契约提案**（进程模型、来源分层不跨来源比 score、同房间交叉回声抑制、barge 归属正在播放设备、仲裁 trace/metrics 字段、Q1–Q7 待 rui 决定）。短期我们接受"一设备一实例"，不催进度 |
+| 2026-10-25 15:27 | 扫描确认 **v0.4.2 已发布且可拉**：tag `v0.4.2`（`3c4af3e`），ghcr `0.4.2`=`0.4`，digest `sha256:3791ccfd…`（amd64+arm64）；#7 两条新评论（07:27Z 公布 digest + 4 项检查清单；07:42Z 多设备仲裁冻结补充），#11 已答复 Q1–Q7（0.5 单实例多 plane，不需要 adapter 改字段） |
+| 2026-10-25 16:05 | **0.4.2 受控切换完成**（.34）：清空旧镜像 → 新用户视角 agent 装 vanilla 0.4.2 → Lead 加 adapter 层 → `rui-dot2:0.4.2` healthy；`plug-test` 15/0/2/5 与基线一致；`/devices/dot2/status` 显示 8870 / `DOT2_EM_TOKEN`；**撤门控后自听复现**，已恢复 `DOT2_PLAYBACK_GATE_MS=2500`；回滚演练 0.4.2↔0.3.4 双向通过。真人段按 9 哥要求暂缓 |
+
+### 2026-10-25 15:27 — v0.4.2 发布（tag + digest + 4 项清单），多设备仲裁冻结
+
+- **产物**：tag `v0.4.2` → `3c4af3e`；ghcr `0.4.2`=`0.4`，OCI index digest
+  `sha256:3791ccfdbd4429bba76eb57776d2b9047538ff3a8766f725e4c2ee19f1d4096b`（amd64+arm64，匿名可拉）。
+- **#7 评论（07:27:59Z）**：9 哥已同意 .34 受控切换；0.4.2 仅控制台/文档收尾（Phase 4：单一 nav manifest、
+  11 面板、旧 panel/路由退役、README 瘦身、多设备设计文档），**无 API/config schema/音频/设备运行时改动**；
+  要求记录 4 项：① /health 字段；② `/devices/dot2/status` 8870 + DOT2_EM_TOKEN；③ followup 2500/false 并撤门控；
+  ④ 一次真实回合 + 回滚。
+- **#11 评论（07:42:09Z）**：Q1–Q7 全部答复；0.5 直接做**单实例多 plane**（多实例只是过渡部署手法）；
+  来源分层可配置、400 ms 候选合并窗口、同房间交叉回声由 RUI 抑制（room 必填）、barge 只归正在播放设备、
+  trace 字段采纳我方命名、`max_planes: 4`；**不要求 adapter 为仲裁加字段**。
+- **#4 已关闭**：控制台 token 不可见的问题 0.4.1 修复（我们冷启动报告里的 K4 与它相关）。
+- **处置**：0.4.2 可用 → 触发冷启动；9 哥同意原地切换。
+
+### 2026-10-25 16:05 — 0.4.2 受控切换 + 回滚演练完成（详见 switch-0.4.2-report.md）
+
+- 备份/清镜像 → 新用户视角 agent 装 vanilla 0.4.2（版本对、数据逐字节未变，但设备 adapter 缺失 → 必然 unhealthy）→
+  Lead 加 adapter 层（manifest 1.1.1、`rui-dot2:0.4.2`）→ healthy，`plug-test` 15/0/2/5，status 8870/DOT2_EM_TOKEN。
+- **反直觉发现**：按维护者建议撤 `DOT2_PLAYBACK_GATE_MS` 只留 `followup_delay_ms=2500` + `followup_replay=false`，
+  自听复现（一条垃圾 turn）；恢复门控后 45 s 内 0 条伪造 turn → 门控保持，向 #7 反馈。
+- 回滚演练：0.4.2→0.3.4 21 s、0.3.4→0.4.2 11 s，设备均自动重连。
+- 真人段按 9 哥要求暂缓；非人工回合用官方 `/api/v1/debug/say` 验证播放链路。
+- 待办：向 rui 开 cold-start 反馈 issue + #7 回帖；补真人段；OVW 决策；token 显示口径。
