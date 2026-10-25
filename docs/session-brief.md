@@ -91,6 +91,7 @@ Dot 2 已作为 **rui 0.4.2** 卫星跑通（.34：vanilla 0.4.2 冷启动 + 下
 | 坑 | 事实 |
 |---|---|
 | 播放被拒 | `audio.playback.rate` 必须 **48000**，否则报 "wire is 48000" 且不播 |
+| 音量小 | `devices[].volume` 是百分数：60% = 设备 codec level 76 ≈ **−25.5 dB**（127=unity），且响度阶梯只给 `EQ_100` +14.9 dB；实测 60 比 100 低约 30–40 dB。部署用 **volume: 100** |
 | 自听 | **0.4.2 实测**：只设 `followup_delay_ms=2500`+`followup_replay=false` 不够，仍会生成垃圾 turn；`DOT2_PLAYBACK_GATE_MS=2500` 必须保留 |
 | 设备 AEC | Dot 抵消自己喇叭声 → 从它喇叭注入唤醒词永远唤不醒，唤醒只能真人发声 |
 | vanilla 原地升级 | 已有 out-of-tree adapter 的安装切 vanilla 必然 unhealthy（enabled device 不可驱动）；且旧 manifest `<0.4.0` 会被拒 |

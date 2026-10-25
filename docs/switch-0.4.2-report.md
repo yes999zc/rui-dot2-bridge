@@ -89,3 +89,23 @@
 - 第 3 项（撤门控）**实测不成立**，已回退到门控方案并记录在案。
 - 第 4 项（真实回合 + 回滚）：回滚演练通过；真人回合按 9 哥要求暂缓，之后补。
 - vanilla 冷启动的 5 个卡点单独开 issue 反馈给上游。
+
+## 九、音量偏小的根因与修复（9 哥实测反馈，2026-10-25 16:09）
+
+9 哥反馈"播放声音特别小"。根因不在 0.4.2（该版本无音频运行时改动），而在**音量两层单位 + EQ 阶梯的耦合**：
+
+| 层 | 值 | 换算 |
+|---|---|---|
+| rui `devices[].volume`（百分数） | **60** | rui 侧 `mysoftvol` 0–255 → 153 |
+| adapter `set_volume_255(153)` | 60 % | `percent_to_level(60)` → 设备码率 level **76** |
+| 设备 codec 音量律（0.5 dB/step，127=unity） | level 76 | 相对 unity **−25.5 dB** |
+| 响度阶梯 `curve_for_level(76)` | `EQ_60` | 语音带增益仅 **+0.3 dB**（`EQ_100` 是 +14.9 dB） |
+
+即：配置里的 60 % 让它同时拿到"设备 −25.5 dB"和"EQ 阶梯不补偿"两重衰减，合计比 `volume: 100` 低约 30–40 dB。
+
+**修复**：把 `devices[].volume` 从 60 改成 **100**。rui 的 `0 = 不管理` 会跳过 reconcile，而 adapter 的连接时 push 是
+`DOT2_VOLUME_CAP`（100 % → level 127 = unity）；改成 100 后两边一致、不再有 reconcile-down，播放时选到 `EQ_100`。
+实测：`/loudness` 的 `curve` 在播放后为 `EQ_100`，日志不再出现 `volume: reconciled to ...`。
+
+后续若仍偏小/偏大：优先调 `trim_db`（现 −2 dB）或 `PUT http://127.0.0.1:8872/loudness` 的 parametric bands（热生效，不用重启）。
+另：`devices[].volume=60 → −25.5 dB` 这个换算坑值得写进我们的部署说明，也可能值得回报上游（百分数映射到指数型 codec 律时不是线性响度）。
