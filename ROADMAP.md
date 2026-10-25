@@ -3,6 +3,28 @@
 > 版本：v2（2026-10-24 02:30）｜上一版：v1（2026-10-24 02:10）
 > 变化见文末「§9 v1 → v2 变更」。目标仓库：[rui-dot2-bridge](https://github.com/yes999zc/rui-dot2-bridge)（私有）
 
+## 当前状态（2026-10-25 · v3）
+
+> 本节覆盖下面的历史计划；阶段编号沿用 v2，但状态以本节为准。完整交代见
+> [`docs/handoff-2026-10-25.md`](docs/handoff-2026-10-25.md)。
+
+| 项 | 状态 |
+|---|---|
+| P0 协议探针 | ✅ 完成（register/ack、帧率、回滚、抓包） |
+| P1 adapter v0（单声道） | ✅ 真机跑通：唤醒→ASR→LLM→TTS、LED、音量、响度、EOS/flush、回滚 |
+| P2 唤醒/打断 | 🟡 功能可用：真机 barge 已触发（服务端停推 3–7 ms）；严格 20 次唤醒率/打断延迟仍待真人标定 |
+| P3 固件补丁（2ch 参考） | ✅ **已发布并安装**：独立仓库 `echomuse-dot2-ref` v0.1.0；设备跑 `20261024-1911-dev`（server_b），server_a 保留旧固件可回滚 |
+| AEC 归属 | ✅ 结论：设备 AEC 稳态 14–18 dB 是该声学链路上限；生产选 **ref_channels=0 + 设备 AEC**，rui AEC 不再必需；2ch 保留但不启用 |
+| P4 生产化 | 🔄 测试实例已在另一台服务器用 **Docker** 部署 rui **v0.2.2**（8080 控制台，healthy），但 **Dot2 接入被协议变更阻塞** |
+| 误唤醒 | ✅ 基线：20 次文件播放（三档音量 / wakeMic 0、6）**0 误唤醒、0 空唤醒**；此前"自听"是 `debug/say` 把输入记成 turn 的误判 |
+
+**当前阻塞**：rui 0.2.2 改成单入口 4412（`ws//?token=`），且声明式 plug 不执行 entrypoint、一个音频面只驱动一台设备；
+EchoMuse 需要 `wss + X-EM-Token`。已提 [rui#7](https://github.com/yes999zc/rui/issues/7) 问契约（多卫星共存、out-of-tree adapter、
+AEC/wake 归属、端口、响度）。**在 rui 回复并定稿 plug/接口文档前，桥代码不迁移。**
+
+**下一步**：① 等 rui 答复/文档；② 桥迁移到 0.2.x 契约（端口保持 8870，LX06 共存，唤醒仲裁归 rui）；
+③ 以 Docker 方式冷部署（纯用户视角智能体先跑、Lead 再配参数）；④ 端到端回归（唤醒/打断/自听/回滚）。
+
 ## 0. 一页纸
 
 | 项 | 内容 |

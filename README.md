@@ -28,7 +28,17 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 2. **设备支持静态 controller 地址**，不必依赖 mDNS：`/data/local/etc/echomuse/controller.json` → `{"endpoints":[{"host":"…","port":8767,"tls_port":8770}],"mdns":false}`。老项目里那条 `dns-sd -P` 前台进程可以彻底不要。
 3. **rui 的设备层就是为"加一个 adapter"设计的**：`DeviceAdapter` 契约 + `AdapterName` 已是普通字符串 + `registry.register(name, target)` 钩子。adapter 可以放在**本仓库**，不需要改 rui 任何文件。
 
-## 现状（2026-10-24 03:1x）
+## 现状（2026-10-25）
+
+> **重大变化**：rui 已发布 **0.2.2**。测试实例改成 Docker 部署，控制台 **8080**、设备单入口 **4412**，
+> 0.1.x 的 8095/8870/8872 在 0.2.2 中已不存在；Dot2 的 EchoMuse 协议（wss + `X-EM-Token`）暂时接不上，
+> 桥迁移**暂停**，等 rui 定稿 plug/接口文档。背景、成果、问题、下一步见
+> [`docs/handoff-2026-10-25.md`](docs/handoff-2026-10-25.md)。
+>
+> 设备侧：P3 补丁固件**已安装**（server_b，`20261024-1911-dev`），独立仓库
+> [`echomuse-dot2-ref`](https://github.com/yes999zc/echomuse-dot2-ref) v0.1.0；server_a 保留旧固件可回滚。
+> AEC 结论：设备 AEC（14–18 dB）已是该链路的上限，生产用 `ref_channels=0` + 设备 AEC。
+
 
 | 项 | 状态 |
 |---|---|
@@ -48,10 +58,12 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 | rui 生产部署（NAS） | ⬜ 待 NAS 部署目录 + 验收日镜像更新；override/runbook 已备好 |
 | 旧 EchoMuse controller | 容器保留可启动，默认停止（30% 音量约束） |
 
-## 独立测试实例（honor-nas）
+## 独立测试实例
 
-`192.168.5.34:8095` 上跑着一套独立的 rui 0.1.3（systemd `rui-test`），与 `.168` 生产和
-Mac dev 实例隔离；部署细节与踩坑见 [`docs/deploy-honor-nas.md`](docs/deploy-honor-nas.md)，复盘（谁的锅、改正项）见
+旧方案（systemd + venv + rui 0.1.3，8095/8870/8872）已于 2026-10-24 整体删除。
+现在测试实例是 **rui v0.2.2 官方 Docker 镜像**（控制台 8080，设备入口 4412，`network_mode: host`），
+由一次"纯用户视角"的部署完成，报告见 [`docs/deploy-0.2.2-user-report.md`](docs/deploy-0.2.2-user-report.md)。
+旧部署的踩坑与复盘仍保留在 [`docs/deploy-honor-nas.md`](docs/deploy-honor-nas.md)、
 [`docs/deploy-honor-nas-retro.md`](docs/deploy-honor-nas-retro.md)。
 
 ## AEC（谁消回声）
