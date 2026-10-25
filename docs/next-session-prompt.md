@@ -21,8 +21,9 @@ AEC 归设备（`ref_channels=0`）；部署一律 Docker。
   Lead 加 adapter 层 → healthy；回滚演练 0.4.2↔0.3.4 双向通过（21 s / 11 s）。
 - **门控结论（与上游建议相反）**：撤 `DOT2_PLAYBACK_GATE_MS` 只留 `followup_delay_ms=2500`+`followup_replay=false`
   会复现自听（垃圾 turn）；恢复门控后 45 s 内 0 条伪造 turn → **门控必须保留**，待回写 #7。
-- 未完成：**真人段**（9 哥要求暂缓：先配合把上游 rui 写好，效果调试属我们后续）；`ready=false/token_missing` 显示口径；
-  `.34` 控制台 token 轮换一次。
+- 音量：`devices[].volume` 60 → **100**（设备 unity + `EQ_100`），9 哥已复听确认「声音可以了」。
+- 真人段：9 哥确认历史已做过，0.4.2 **不再重复安排**；用官方 `/debug/say` 覆盖 runner/TTS/播放链路。
+- 剩余：`ready=false/token_missing` 显示口径（等 rui 回）、OWW 决策；`.34` 控制台 token 已轮换。
 
 ## 服务器登录与路径（.34）
 
@@ -39,14 +40,14 @@ AEC 归设备（`ref_channels=0`）；部署一律 Docker。
 1. **回写 GitHub**：cold-start 卡点单独开 issue（反馈从 `docs/deploy-0.4.2-user-report.md` 提炼）；
    #7 回帖（0.4.2 清单逐项、门控实测、token 显示口径、healthcheck 提示、回滚数据）；
     #11 只做"已知悉、不改 adapter 字段"的 ack（如需）。
-2. 真人段补测（9 哥在位时）：唤醒→回合、播放中打断 ≤300 ms、音量/LED、安静房间 3–5 次基线。
+2. ~~真人段补测~~（已关闭：9 哥确认历史已验证，0.4.2 不重复）。
 3. `ready=false / token_missing` 三选一修法（启动注入 `DOT2_EM_TOKEN` / manifest 回默认 `RUI_DEVICE_TOKEN` / 上游支持文件来源）。
-4. 音量偏小（9 哥实测）属我们 loudness/EQ 链路，后续调，不阻塞上游。
+4. ~~音量偏小~~（已修复：`devices[].volume` 60→100，9 哥确认可以）。
 5. 设备侧 OWW 决策：建议先 B（英文 stock `hey_jarvis` 验机制）再 C（oww_forge 训中文）。
 
 ## 待决策
 
-1. 真人段何时补测（9 哥安排）；
+1. ~~真人段何时补测~~（已关闭）；
 2. OWW：英文 stock 先跑通 vs 训中文"你好小瑞"；
 3. 多设备：等上游 0.5 Phase 2 契约（单实例多 plane），一次实现到位，不为仲裁改 adapter 字段。
 
