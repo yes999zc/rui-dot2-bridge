@@ -158,5 +158,24 @@
     "rui_version": "0.6.0",
     "plugin_version": "1.2.0",
     "built_by": "GitHub Actions docker-publish (yes999zc/rui, main @ 7d1c1f8)"
+  },
+  "upstream_pin": {
+    "note": "Deploy pin for the official 0.6.0 release image. The 'image' block above records the run that produced these checks (CI sha tag built from main @ 7d1c1f8, same 0.6.0 tree); deploy/downstream/Dockerfile and docker-compose.yml build on the release digest below. Canary evidence against this digest: docs/canary-0.6.0-official-image.md",
+    "base": "ghcr.io/yes999zc/rui@sha256:abef1f276c3c21e9155d97c98913ee6c2e98fdfe842e43b90f64a5db6c12b241",
+    "reference": "ghcr.io/yes999zc/rui:0.6.0@sha256:abef1f276c3c21e9155d97c98913ee6c2e98fdfe842e43b90f64a5db6c12b241",
+    "tag": "0.6.0",
+    "release": "https://github.com/yes999zc/rui/releases/tag/v0.6.0",
+    "platforms": ["linux/amd64", "linux/arm64"],
+    "manifest_list": "application/vnd.oci.image.index.v1+json",
+    "platform_manifests": {
+      "linux/amd64": "sha256:6ab78ef6442faf0cffee4098720774b77196a657f19427ef0283c19970417c48",
+      "linux/arm64": "sha256:8008cce605d1d70baa4357f844fb4eaeb80e610e4e262cbb776e998b4a55d59f"
+    },
+    "pinned_in": [
+      "deploy/downstream/Dockerfile",
+      "deploy/downstream/docker-compose.yml"
+    ],
+    "pinned_at": "2026-10-26",
+    "plugin_version": "1.2.0"
   }
 }

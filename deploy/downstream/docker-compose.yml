@@ -14,7 +14,9 @@ services:
       context: ../..
       dockerfile: deploy/downstream/Dockerfile
       args:
-        RUI_IMAGE: ${RUI_BASE_IMAGE:-ghcr.io/yes999zc/rui:0.6.0}
+        # Pinned by digest (tag 0.6.0 / release v0.6.0, linux/amd64 + linux/arm64).
+        # A tag can move; the digest cannot. Override RUI_BASE_IMAGE only on purpose.
+        RUI_IMAGE: ${RUI_BASE_IMAGE:-ghcr.io/yes999zc/rui:0.6.0@sha256:abef1f276c3c21e9155d97c98913ee6c2e98fdfe842e43b90f64a5db6c12b241}
     container_name: rui
     restart: unless-stopped
     network_mode: host

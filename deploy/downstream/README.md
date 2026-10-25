@@ -17,6 +17,45 @@ source changes**, the core is the upstream image, only the plug is added.
 `third-party` entry is ignored, and built-in names cannot be overridden. The manifest
 is what gates the hook, not the env var alone.
 
+## Pinned upstream
+
+The base image is the **official** rui image, pinned by digest in two places:
+
+| Where | What |
+|---|---|
+| `deploy/downstream/Dockerfile` | `ARG RUI_IMAGE=` default |
+| `deploy/downstream/docker-compose.yml` | `RUI_BASE_IMAGE` default (build arg) |
+
+```
+ghcr.io/yes999zc/rui:0.6.0@sha256:abef1f276c3c21e9155d97c98913ee6c2e98fdfe842e43b90f64a5db6c12b241
+```
+
+- **tag** `0.6.0`, release <https://github.com/yes999zc/rui/releases/tag/v0.6.0>
+- **digest** of the multi-arch manifest list: `linux/amd64` + `linux/arm64`
+  (per-platform manifests are `sha256:6ab78ef6…7c48` and `sha256:8008cce6…d59f`)
+  and built by the upstream `docker-publish` workflow, not by this repo
+- the plugin layer on top is `dot2-echomuse` 1.2.0 (`plugin.yaml`), which declares
+  `requires rui >=0.6.0 <0.7.0`
+
+**Why a digest and not a tag.** A tag is a mutable pointer: `0.6.0` can be
+re-pushed (or, for `latest`, silently repointed) and every rebuild of this layer
+would then carry a different core, with no diff and no trace in this repo. The
+digest names one immutable manifest list, so `docker build` is reproducible, a
+rollback is exact, and the base can be verified with
+`docker image inspect` / `docker buildx imagetools inspect`.
+
+**Upgrading the base.** When a new upstream release lands:
+
+```bash
+docker buildx imagetools inspect ghcr.io/yes999zc/rui:<version> | head -3   # tag + digest
+```
+
+then change the tag+digest in the Dockerfile default *and* in the compose build
+arg (and in `docs/contract-report-<version>.json` if the contract was re-run),
+rebuild on the deploy host, and re-run the contract kit + clock the evidence in
+`/health`. Never bump only the tag, and never fall back to `latest`: a floating
+base turns "same image id" into an assumption instead of a fact.
+
 ## Build
 
 Build on the target architecture (the test host is x86_64; an arm64 Mac cannot
@@ -28,6 +67,19 @@ docker build -f deploy/downstream/Dockerfile -t rui-dot2:0.6.0 .
 ```
 
 Upgrade = rebuild this layer on a new base tag; `docker compose up -d` again.
+
+**On the fnOS NAS, build with the legacy builder** (`DOCKER_BUILDKIT=0`). BuildKit
+tries to resolve the `# syntax=docker/dockerfile:1` frontend through the mirror
+configured on that host (`docker.fnnas.com`), which answers `401 Unauthorized`, so it
+fails before it ever reaches the pinned base. The legacy builder ignores the `syntax`
+directive and builds the same `FROM ${RUI_IMAGE}`:
+
+```bash
+DOCKER_BUILDKIT=0 docker build -f deploy/downstream/Dockerfile -t rui-dot2:0.6.0 .
+```
+
+Verified 2026-10-26 on the production NAS: BuildKit failed with the 401 above, the
+legacy builder finished in one step on the pinned digest.
 
 ## Run
 

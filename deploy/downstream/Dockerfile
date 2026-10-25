@@ -7,8 +7,13 @@
 #
 #   docker build -f deploy/downstream/Dockerfile -t rui-dot2:0.6.0 .
 #
-# Pin a concrete upstream tag/digest; never build from `latest` in production.
-ARG RUI_IMAGE=ghcr.io/yes999zc/rui:0.6.0
+# Pin by digest: tag 0.6.0 / release https://github.com/yes999zc/rui/releases/tag/v0.6.0
+# (multi-arch manifest list: linux/amd64 + linux/arm64). A tag can be re-pushed, a
+# digest cannot, so this layer always builds on the same core. Upgrade = replace both
+# tag and digest with the next release's
+# `docker buildx imagetools inspect ghcr.io/yes999zc/rui:<version>` output; never build
+# from `latest` in production.
+ARG RUI_IMAGE=ghcr.io/yes999zc/rui:0.6.0@sha256:abef1f276c3c21e9155d97c98913ee6c2e98fdfe842e43b90f64a5db6c12b241
 FROM ${RUI_IMAGE}
 
 # Package dir == manifest root: the module is `rui_dot2_bridge.adapter`, and rui's
