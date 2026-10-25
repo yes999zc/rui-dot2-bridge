@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-25 — 0.2.2 迁移暂停 / AEC 结论 / 补丁落地
+
+### Added
+
+- P3 固件补丁独立成仓库 **echomuse-dot2-ref**（MIT，v0.1.0 release + GitHub Actions 构建 + A/B 安装/回滚脚本）；
+  已安装到设备 server_b（`20261024-1911-dev`），server_a 保留旧固件。
+- rui v0.2.2 测试实例（官方 Docker 镜像，控制台 8080，设备入口 4412）以"纯用户视角"部署成功，报告
+  `docs/deploy-0.2.2-user-report.md`。
+- AEC 三份调研落库：`aec-rui-analysis.md`（线性上限 14–18 dB）、`aec-device-tuning.md`（设备 AEC 稳态 14–18.2 dB，
+  tail/AGC 在当前拓扑无效）、`aec-parameter-model.md`（who/reference/constraints 参数模型）。
+- 误唤醒基线：20 次文件播放（三档音量 + wakeMic 0/6）0 误唤醒、0 空唤醒；确认"自听"是 `debug/say` 的 turn 记录假象。
+- 迁移计划与契约问题：`docs/next-deployment-plan.md`、`docs/rui-0.2.2-dot2-compat.md`、`docs/rui-0.3-requirements.md`；
+  向 rui 提 [#3](https://github.com/yes999zc/rui/issues/3)（device_wake）与 [#7](https://github.com/yes999zc/rui/issues/7)（0.2.2 接入契约）。
+
+### Changed
+
+- 生产配置定为 `ref_channels=0` + 设备 AEC；`DOT2_PLAYBACK_GATE_MS` 默认 0（可选半双工兜底）。
+- 设备 `controller.json` 只保留测试实例一个 endpoint（移除 Mac/旧 IP 兜底）。
+
+### Removed
+
+- 测试主机上的旧 systemd 部署、代码仓、venv、模型、状态目录全部清理。
+
 ## Unreleased — 2026-10-24（白天）
 
 ### Fixed
