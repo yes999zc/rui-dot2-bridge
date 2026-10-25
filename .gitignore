@@ -34,6 +34,9 @@ dev/rui*/config.last-good.yaml
 dev/rui*/audio*.sock
 dev/rui*/logs/
 artifacts/
+
+# Upstream watch runtime state (scripts/watch_upstream.py --update-state)
+.watch/
 artifacts/eq-prototype/*.cfg
 
 # stray playback dumps (DOT2_PLAYBACK_DUMP defaults to off now)
