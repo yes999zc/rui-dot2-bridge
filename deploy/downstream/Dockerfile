@@ -5,10 +5,10 @@
 # plug (adapter + its `rui-device/v1` manifest) and the two env vars that make the
 # 0.3.x manifest-gated loader import it.
 #
-#   docker build -f deploy/downstream/Dockerfile -t rui-dot2:0.3.4 .
+#   docker build -f deploy/downstream/Dockerfile -t rui-dot2:0.5.1 .
 #
 # Pin a concrete upstream tag/digest; never build from `latest` in production.
-ARG RUI_IMAGE=ghcr.io/yes999zc/rui:0.3.4
+ARG RUI_IMAGE=ghcr.io/yes999zc/rui:0.5.1
 FROM ${RUI_IMAGE}
 
 # Package dir == manifest root: the module is `rui_dot2_bridge.adapter`, and rui's

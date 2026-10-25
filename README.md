@@ -6,16 +6,16 @@
 不改 rui 源码：一个 out-of-tree adapter + 一个 Docker 下游镜像，设备侧 AEC 归设备。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![rui](https://img.shields.io/badge/rui-0.3.4%20→%200.5.0-blue)](https://github.com/yes999zc/rui)
+[![rui](https://img.shields.io/badge/rui-0.3.4%20→%200.5.1-blue)](https://github.com/yes999zc/rui)
 [![Device](https://img.shields.io/badge/device-Echo%20Dot%202%20RS03QR-8A2BE2)](#前提条件)
-[![Contract tests](https://img.shields.io/badge/plug--test-15%20PASS%20%2F%200%20FAIL-brightgreen)](docs/contract-report-0.5.0.json)
+[![Contract tests](https://img.shields.io/badge/plug--test-15%20PASS%20%2F%200%20FAIL-brightgreen)](docs/contract-report-0.5.1.json)
 
 </div>
 
 ---
 
-> **状态**：rui 0.5.0 上通过干净安装 + 真机验收（唤醒→回合、播放中打断服务端 ≤16 ms、安静房间 0 误唤醒）。
-> 上游契约自测 0.3.4 / 0.4.0 / 0.4.1 / 0.4.2 / 0.5.0 均为 **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**。
+> **状态**：rui 0.5.1 上通过干净安装复测 + 下游层验收（唤醒→回合、播放中打断服务端 ≤16 ms、安静房间 0 误唤醒）。
+> 上游契约自测 0.3.4 / 0.4.0 / 0.4.1 / 0.4.2 / 0.5.0 / 0.5.1 均为 **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**。
 
 ## 🤖 如果你想让 agent 帮你安装（推荐）
 
@@ -99,7 +99,7 @@ cd rui-dot2-bridge
 
 # 2. 在 x86_64 宿主上构建下游镜像（官方 rui + adapter 层）
 DOCKER_BUILDKIT=0 docker build -f deploy/downstream/Dockerfile \
-  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.5.0 -t rui-dot2:0.5.0 .
+  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.5.1 -t rui-dot2:0.5.1 .
 
 # 3. 部署目录（示例 ~/rui）：compose + config + data + dot2-secrets
 #    参考 deploy/downstream/docker-compose.yml；dot2-secrets/ 放部署目录（0600）
@@ -108,7 +108,7 @@ DOCKER_BUILDKIT=0 docker build -f deploy/downstream/Dockerfile \
 sh deploy/downstream/install-plug-manifest.sh ~/rui/data
 
 # 5. .env 关键项（完整示例见 deploy/downstream/README.md）
-#    RUI_IMAGE=rui-dot2:0.5.0
+#    RUI_IMAGE=rui-dot2:0.5.1
 #    DOT2_SECRETS_DIR=/opt/rui-secrets
 #    DOT2_EQ_DIR=/opt/rui-secrets/eq        # 从设备拉出的 EQ_*.cfg（响度曲线）
 #    DOT2_VOLUME_CAP=100
@@ -136,7 +136,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/setup/device \
 
 ```bash
 docker run --rm --entrypoint python -e PYTHONPATH=/opt/rui-plugins \
-  -v "$PWD/src:/opt/rui-plugins:ro" ghcr.io/yes999zc/rui:0.5.0 \
+  -v "$PWD/src:/opt/rui-plugins:ro" ghcr.io/yes999zc/rui:0.5.1 \
   -m rui plug-test /opt/rui-plugins/rui_dot2_bridge \
   --adapter rui_dot2_bridge.adapter:build --json
 ```
@@ -158,7 +158,7 @@ docker run --rm --entrypoint python -e PYTHONPATH=/opt/rui-plugins \
 | [deploy/downstream/](deploy/downstream/) | 下游镜像、compose、manifest 安装脚本 |
 | [docs/clean-install-0.5.0.md](docs/clean-install-0.5.0.md) | 0.5.0 干净安装手册（含回滚） |
 | [docs/clean-install-0.5.0-result.md](docs/clean-install-0.5.0-result.md) | 0.5.0 干净安装 + 验收记录 |
-| [docs/contract-report-0.5.0.json](docs/contract-report-0.5.0.json) | 官方 plug-test 报告（同目录有 0.3.4 / 0.4.x） |
+| [docs/contract-report-0.5.1.json](docs/contract-report-0.5.1.json) | 官方 plug-test 报告（同目录有 0.3.4 / 0.4.x / 0.5.0） |
 | [docs/oww-route-b-status.md](docs/oww-route-b-status.md) | 设备端唤醒（OWW）现状与路线 |
 | [docs/real-machine-round-1.md](docs/real-machine-round-1.md) | 真机验收第 1 轮记录 |
 | [docs/protocol-map.md](docs/protocol-map.md) | EchoMuse 设备协议 ↔ rui AudioFrame 映射 |

@@ -1,6 +1,6 @@
-# rui + dot2 plug (downstream image). Mirrors upstream docker-compose.yml so a
-# vanilla 0.2.x/0.3.x install can be switched to the downstream image without
-# changing config/, data/ or the host-network contract.
+# rui + dot2 plug (downstream image). Mirrors upstream docker-compose.yml so an
+# existing rui install can be switched to the downstream image without changing
+# config/, data/ or the host-network contract.
 #
 #   docker compose -f docker-compose.yml up -d
 #
@@ -9,12 +9,12 @@ name: rui
 
 services:
   rui:
-    image: ${RUI_IMAGE:-rui-dot2:0.3.4}
+    image: ${RUI_IMAGE:-rui-dot2:0.5.1}
     build:
       context: ../..
       dockerfile: deploy/downstream/Dockerfile
       args:
-        RUI_IMAGE: ${RUI_BASE_IMAGE:-ghcr.io/yes999zc/rui:0.3.4}
+        RUI_IMAGE: ${RUI_BASE_IMAGE:-ghcr.io/yes999zc/rui:0.5.1}
     container_name: rui
     restart: unless-stopped
     network_mode: host

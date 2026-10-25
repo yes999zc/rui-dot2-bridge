@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — 跟随 rui 0.5.1
+
+### Changed
+
+- 文档与默认值全部从 rui **0.5.0** 更新到 **0.5.1**（README 徽章/构建示例、`docs/agent-install.md` 的步骤与
+  `.env` 示例、`deploy/downstream/README.md`）。`deploy/downstream/Dockerfile` 的 `ARG RUI_IMAGE` 默认值也从
+  `0.3.4` 改为 `0.5.1`：不带 `--build-arg` 直接构建时不再悄悄落到 0.3.4。
+- `deploy/downstream/docker-compose.yml`：`image` 与 `RUI_BASE_IMAGE` 的默认值改为 `0.5.1`。
+- `deploy/rui-dot2-override.yml`：service 名 `house-ear` → **`rui`**（0.2+ 上游 compose 的容器名），挂载路径改为
+  `${DOT2_REPO_DIR:-/opt/rui-dot2-bridge}` 由部署方提供（仓库不再带具体宿主路径），并修正注释里音频面子进程的模块名
+  （`rui.audio.process`）。
+
+无 adapter 代码改动；`rui_compat "≥0.3.0 <0.6.0"` 不变。
+
 ## 2026-10-25 — 开源（MIT）
 
 - 项目以 **MIT** 许可开源；新增 `LICENSE`、面向新用户的 `README.md` 落地页（含"让 agent 帮你安装"入口）与

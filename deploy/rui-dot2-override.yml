@@ -1,23 +1,25 @@
-# rui + dot2 adapter on the NAS — compose override
-
-Run this **next to** rui's own `docker-compose.yml` (same directory), never editing
-the rui checkout or its image:
-
-    cd <rui-deploy-dir>            # the dir with docker-compose.yml + config/ + data/
-    docker compose -f docker-compose.yml -f rui-dot2-override.yml up -d
-
-Replace the two host paths with wherever this project lives on the NAS. Everything
-else comes from rui's own compose file (host network, restart policy, healthcheck).
+# rui + dot2 adapter on the NAS: compose override
+#
+# Run this **next to** rui's own `docker-compose.yml` (same directory), never editing
+# the rui checkout, its image or its source:
+#
+#     cd <rui-deploy-dir>            # the dir with docker-compose.yml + config/ + data/
+#     DOT2_REPO_DIR=/path/to/rui-dot2-bridge \
+#       docker compose -f docker-compose.yml -f rui-dot2-override.yml up -d
+#
+# The service name matches upstream (`rui`, 0.2+). Everything else comes from rui's
+# own compose file (host network, restart policy, healthcheck). The paths below are
+# operator-owned; the repo never carries a real host path.
 
 services:
-  house-ear:
+  rui:
     volumes:
       # src/ goes in as a PYTHONPATH root: it contains both rui_dot2_bridge/ and
       # sitecustomize.py, so the adapter registers itself in the parent process
-      # AND in the audio-plane child (which is `python -m house_ear.audio.process`).
-      - /volume1/docker/rui-dot2-bridge/src:/opt/rui-py:ro
+      # AND in the audio-plane child (which is `python -m rui.audio.process`).
+      - ${DOT2_REPO_DIR:-/opt/rui-dot2-bridge}/src:/opt/rui-py:ro
       # ca.pem / server.pem / server.key / device_token, mode 0600, never in git.
-      - /volume1/docker/rui-dot2-bridge/secrets:/opt/rui-secrets:ro
+      - ${DOT2_REPO_DIR:-/opt/rui-dot2-bridge}/secrets:/opt/rui-secrets:ro
     environment:
       PYTHONPATH: /opt/rui-py
       DOT2_SECRETS_DIR: /opt/rui-secrets
