@@ -9,12 +9,12 @@ name: rui
 
 services:
   rui:
-    image: ${RUI_IMAGE:-rui-dot2:0.5.2}
+    image: ${RUI_IMAGE:-rui-dot2:0.6.0}
     build:
       context: ../..
       dockerfile: deploy/downstream/Dockerfile
       args:
-        RUI_IMAGE: ${RUI_BASE_IMAGE:-ghcr.io/yes999zc/rui:0.5.2}
+        RUI_IMAGE: ${RUI_BASE_IMAGE:-ghcr.io/yes999zc/rui:0.6.0}
     container_name: rui
     restart: unless-stopped
     network_mode: host

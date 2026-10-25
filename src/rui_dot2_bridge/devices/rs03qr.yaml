@@ -8,6 +8,15 @@ transport: inbound
 protocol: {kind: wss, version: "1"}
 capabilities: [playback, led, volume, keys, device_wake, barge_via_device]
 wake: {source: device, barge_via_device: true}
+# Hardware audio defaults (rui-device/v1, rui 0.6 `audio_defaults`): the bottom
+# layer of the three-layer merge (manifest < global config < devices[].audio).
+# The stock Dot 2 captures mono 16 kHz S16 with no playback reference; the speaker
+# wire is 48 kHz mono. ack_echo_ignore_ms=2500 keeps the echo window working on
+# 0.6 without a deployment-side override.
+audio_defaults:
+  capture: {rate: 16000, channels: 1, mic_channels: 1, ref_channels: 0, bits: 16}
+  playback: {rate: 48000, channels: 1}
+  ack_echo_ignore_ms: 2500
 device_side:
   artifact: firmware
   name: "EchoMuse device firmware (RS03QR)"
@@ -26,5 +35,5 @@ params:
   - {key: wake_words, label: "唤醒词", type: list, default: ["你好小瑞"], max: 3}
   - {key: port, label: "入站端口", type: int, default: 8870, help: "EchoMuse wss listen port; the device dials this port."}
   - {key: oww_model, label: "设备端唤醒模型", type: string, default: "", help: "Only set when a matching OWW model was pushed to the device; empty keeps RUI KWS."}
-compatibility: {rui_min: "0.3.0", tested_with: ["0.3.4", "0.4.0", "0.4.1", "0.4.2", "0.5.0", "0.5.1", "0.5.2"], notes: "device_wake is opt-in: it needs a device-side OWW model for the configured wake words; no reference channel (device AEC)."}
+compatibility: {rui_min: "0.3.0", tested_with: ["0.3.4", "0.4.0", "0.4.1", "0.4.2", "0.5.0", "0.5.1", "0.5.2", "0.6.0"], notes: "device_wake is opt-in: it needs a device-side OWW model for the configured wake words; no reference channel (device AEC); audio_defaults (0.6+) declares the mono 16 kHz capture, 48 kHz playback and the 2500 ms ack echo window."}
 acceptance: {verified: false, last_verified: "", evidence: "Contract kit report: artifacts/contract-report.json (rui 0.3.4). Live-device acceptance pending."}

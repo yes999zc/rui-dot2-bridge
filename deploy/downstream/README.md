@@ -1,6 +1,6 @@
 # Downstream image: rui + dot2 plug
 
-Upstream rui 0.3.x loads out-of-tree adapters through the manifest-gated
+Upstream rui (0.6.x) loads out-of-tree adapters through the manifest-gated
 `RUI_ADAPTER_PLUGINS` hook (contract: `docs/socket-plug-v1.md` §4.4 in the rui repo).
 This directory is the supported "official image + adapter layer" recipe: **no rui
 source changes**, the core is the upstream image, only the plug is added.
@@ -14,8 +14,8 @@ source changes**, the core is the upstream image, only the plug is added.
 | `ENV RUI_ADAPTER_PLUGINS=dot2=rui_dot2_bridge.adapter:build` | registers the adapter under the name `dot2` |
 
 `plugin.yaml` must keep `trust: trusted` (or `builtin`): a manifest-less or
-`third-party` entry is ignored by 0.3.x, and built-in names (`xiaoai`, `mock`) cannot
-be overridden. The manifest is what gates the hook, not the env var alone.
+`third-party` entry is ignored, and built-in names cannot be overridden. The manifest
+is what gates the hook, not the env var alone.
 
 ## Build
 
@@ -24,7 +24,7 @@ Build on the target architecture (the test host is x86_64; an arm64 Mac cannot
 
 ```bash
 # on the deploy host, from a checkout/sync of this repo
-docker build -f deploy/downstream/Dockerfile -t rui-dot2:0.5.2 .
+docker build -f deploy/downstream/Dockerfile -t rui-dot2:0.6.0 .
 ```
 
 Upgrade = rebuild this layer on a new base tag; `docker compose up -d` again.
@@ -33,7 +33,7 @@ Upgrade = rebuild this layer on a new base tag; `docker compose up -d` again.
 
 ```bash
 # 1. materials next to this file: config/, data/, dot2-secrets/ (0600), .env
-# 2. compose override: RUI_IMAGE=rui-dot2:0.5.2 and RUI_UID/RUI_GID of the host user
+# 2. compose override: RUI_IMAGE=rui-dot2:0.6.0 and RUI_UID/RUI_GID of the host user
 docker compose -f docker-compose.yml up -d
 ```
 

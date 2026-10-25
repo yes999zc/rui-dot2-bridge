@@ -32,10 +32,13 @@ class ManifestLayoutTest(unittest.TestCase):
         # config params.plug_id both depend on it.
         self.assertEqual(plugin["id"], "dot2-echomuse")
         self.assertEqual(plugin["trust"], "trusted")
-        # rui 0.5.0 keeps the same plug/adapter contract (Phase 2 is internal);
-        # only the manifest version gate moves, so the upper bound follows the
-        # release the maintainer confirmed (>=0.3.0 <0.6.0 for rui 0.5.0).
-        self.assertEqual(plugin["rui_compat"], ">=0.3.0 <0.6.0")
+        # rui 0.6.0 keeps the same plug/adapter contract, but the manifest now uses
+        # rui-device/v1 `audio_defaults`, which a pre-0.6 loader rejects
+        # (DeviceManifest is extra="forbid"). The lower bound therefore states the
+        # real requirement (0.6.0+) instead of letting an old core through to a
+        # confusing "extra inputs are not permitted" error.
+        self.assertEqual(plugin["version"], "1.2.0")
+        self.assertEqual(plugin["rui_compat"], ">=0.6.0 <0.7.0")
         self.assertEqual(plugin["devices"], ["devices/rs03qr.yaml"])
 
     def test_device_yaml_fields(self) -> None:
@@ -58,6 +61,15 @@ class ManifestLayoutTest(unittest.TestCase):
             },
         )
         self.assertEqual(device["wake"], {"source": "device", "barge_via_device": True})
+        # rui 0.6 M1: the plug declares its own hardware audio defaults; they are
+        # the bottom layer of manifest < global config < devices[].audio.
+        defaults = device["audio_defaults"]
+        self.assertEqual(
+            defaults["capture"],
+            {"rate": 16000, "channels": 1, "mic_channels": 1, "ref_channels": 0, "bits": 16},
+        )
+        self.assertEqual(defaults["playback"], {"rate": 48000, "channels": 1})
+        self.assertEqual(defaults["ack_echo_ignore_ms"], 2500)
         runtime = device["runtime"]
         self.assertEqual(runtime["mode"], "in-process")
         self.assertEqual(runtime["entrypoint"], "rui_dot2_bridge.adapter:build")
@@ -98,8 +110,14 @@ class RealLoaderTest(unittest.TestCase):
     def test_core_loader_accepts_the_manifest(self) -> None:
         try:
             from rui.plugins.loader import load_plugin
+            from rui.plugins.models import DeviceManifest
         except Exception as exc:  # noqa: BLE001 - optional dependency
             self.skipTest(f"rui not importable here: {exc}")
+        if "audio_defaults" not in getattr(DeviceManifest, "model_fields", {}):
+            # The 1.2.0 manifest requires the rui 0.6 loader; an older core in this
+            # interpreter cannot read rui-device/v1 audio_defaults (it rejects
+            # unknown keys, by design).
+            self.skipTest("installed rui predates the 0.6 audio_defaults field")
         plugin = load_plugin(PACKAGE)
         self.assertEqual(plugin.id, "dot2-echomuse")
         self.assertEqual(str(plugin.trust), "trusted")
@@ -109,6 +127,18 @@ class RealLoaderTest(unittest.TestCase):
         self.assertEqual(device.wake_source.value, "device")
         self.assertTrue(device.barge_via_device_enabled)
         self.assertEqual(device.runtime.mode.value, "in-process")
+        defaults = device.audio_defaults
+        self.assertIsNotNone(defaults)
+        self.assertIsNotNone(defaults.capture)
+        self.assertIsNotNone(defaults.playback)
+        self.assertEqual(
+            (defaults.capture.rate, defaults.capture.channels,
+             defaults.capture.mic_channels, defaults.capture.ref_channels),
+            (16000, 1, 1, 0),
+        )
+        self.assertEqual(defaults.capture.bits, 16)
+        self.assertEqual((defaults.playback.rate, defaults.playback.channels), (48000, 1))
+        self.assertEqual(defaults.ack_echo_ignore_ms, 2500)
 
 
 if __name__ == "__main__":

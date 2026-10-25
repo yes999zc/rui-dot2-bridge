@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased — 插件 1.2.0：rui 0.6 manifest（audio_defaults）
+
+### Changed
+
+- `plugin.yaml`：插件版本 1.1.3 → **1.2.0**；`rui_compat` 从 `">=0.3.0 <0.6.0"` 改为
+  **`">=0.6.0 <0.7.0"`**。上界跟随 rui 0.6 发布线；下界一并抬到 0.6.0，因为 1.2.0 的
+  `devices/rs03qr.yaml` 声明了 v1-only 的 `audio_defaults`，而 rui 0.5.x 的
+  `DeviceManifest` 是 `extra="forbid"`——版本门放行 0.5.x 只会在 manifest 校验处报
+  `audio_defaults: Extra inputs are not permitted`。下界写清楚，旧核心得到的是
+  "requires RUI >=0.6.0" 而不是一条误导性的字段错误。
+- 仍跑 rui 0.5.x 的部署继续用插件 **1.1.3** + 部署侧 `devices[].audio.voice.ack_echo_ignore_ms`
+  配置；本版本不做向后移植。
+
+### Added
+
+- `devices/rs03qr.yaml` 在 `rui-device/v1` 下声明 **`audio_defaults`**（rui 0.6 三层合并的
+  最底层：manifest < 全局 `audio`/`ack` < `devices[].audio`）：
+
+  ```yaml
+  audio_defaults:
+    capture: {rate: 16000, channels: 1, mic_channels: 1, ref_channels: 0, bits: 16}
+    playback: {rate: 48000, channels: 1}
+    ack_echo_ignore_ms: 2500
+  ```
+
+  新部署不再需要手写 `audio.capture` / `audio.playback` /
+  `devices[].audio.voice.ack_echo_ignore_ms` 就能拿到正确值（显式配置仍然优先）；
+  `ack_echo_ignore_ms: 2500` 与 1.1.3 的 adapter 侧播放门控配合，覆盖 rui 的 ack/echo 窗口。
+  `compatibility.tested_with` 补 `0.6.0`。
+- adapter 代码无改动（1.1.3 的播放期静音逻辑不变）。
+
+### Verified
+
+- 官方 `rui plug-test` 在 **rui 0.6.0 候选镜像** `ghcr.io/yes999zc/rui:sha-7d1c1f8`
+  （repo digest `sha256:fc47849732834a42b9393257efb9c65999daaec7300e2bde14ad89b7dbe99963`，
+  CI `docker-publish`，main @ `7d1c1f8`）上：**15 PASS / 0 FAIL / 2 WARN / 5 SKIP**，
+  verdict `pass`；报告 `docs/contract-report-0.6.0.json`（含镜像 tag/digest 与 rui 版本）。
+- 本地单测（rui 0.6.0）：**133 passed**，`ruff check src tests` 通过；
+  `tests/test_manifest.py` 覆盖 1.2.0 的版本/兼容区间与 `audio_defaults` 字段、
+  并在真实 loader 下断言三层合并的 manifest 默认值。
+
 ## Unreleased — 插件 1.1.3：播放期静音上行麦克风（关闭自听）
 
 ### Fixed

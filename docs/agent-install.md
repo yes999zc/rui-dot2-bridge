@@ -8,7 +8,7 @@
 
 在一台 **x86_64 Docker 宿主** 上，把 `rui-dot2-bridge` 部署成 [rui](https://github.com/yes999zc/rui) 的语音卫星：
 
-- rui ≥ 0.5.0（官方镜像）已经或即将在该宿主上运行；
+- rui ≥ 0.6.0（官方镜像）已经或即将在该宿主上运行；
 - 用本仓库的 `deploy/downstream/Dockerfile` 构建下游镜像（官方 rui + dot2 adapter 层）；
 - 设备侧（Echo Dot 2 + EchoMuse 固件）已通过 wss 8870 连到该宿主；
 - 最终验收：`/health` 正常、`devices=1`、`audio_plane=true`、`speaker_connected=true`、`plug-test` 0 FAIL。
@@ -18,7 +18,7 @@
 不要猜，逐项问清楚；缺任何一项都先停下来：
 
 1. **rui 宿主**：ssh 字符串或本机（`user@host`），部署目录（例如 `~/rui`）。
-2. **rui 版本/镜像**：目标 tag（推荐 `ghcr.io/yes999zc/rui:0.5.2` 或更新的 patch），是否已经在本机。
+2. **rui 版本/镜像**：目标 tag（推荐 `ghcr.io/yes999zc/rui:0.6.0` 或更新的 patch），是否已经在本机。
 3. **设备**：Echo Dot 2 的局域网 IP、EchoMuse 固件版本、是否已经解锁/刷好。
 4. **设备凭据**：`ca.pem` / `server.pem` / `server.key` / `device_token` 在哪（不要打印内容）。
 5. **网络**：设备能访问宿主的 8870；宿主 8080 是否需要对局域网开放。
@@ -30,7 +30,7 @@
 uname -m                                  # 期望 x86_64
 docker version --format '{{.Server.Version}}'
 docker compose version
-curl -sS -m 5 http://127.0.0.1:8080/health   # rui 已在跑？version 是否 ≥ 0.5.0
+curl -sS -m 5 http://127.0.0.1:8080/health   # rui 已在跑？version 是否 ≥ 0.6.0
 ss -ltn | grep -E ':8080|:8870|:8872'        # 8870 应空闲（本项目会占用）
 ls -la <部署目录>/config <部署目录>/data 2>/dev/null
 ```
@@ -56,19 +56,19 @@ git log -1 --oneline
 
 ```bash
 docker run --rm --entrypoint python -e PYTHONPATH=/opt/rui-plugins \
-  -v "$PWD/src:/opt/rui-plugins:ro" ghcr.io/yes999zc/rui:0.5.2 \
+  -v "$PWD/src:/opt/rui-plugins:ro" ghcr.io/yes999zc/rui:0.6.0 \
   -m rui plug-test /opt/rui-plugins/rui_dot2_bridge \
   --adapter rui_dot2_bridge.adapter:build --json | tee /tmp/plug-test.json
 ```
 
-要求：**0 FAIL**；WARN/SKIP 与 `docs/contract-report-0.5.2.json` 一致（2 WARN / 5 SKIP 属预期：probe 无真机、inbound 真机 I/O）。
+要求：**0 FAIL**；WARN/SKIP 与 `docs/contract-report-0.6.0.json` 一致（2 WARN / 5 SKIP 属预期：probe 无真机、inbound 真机 I/O）。
 
 ### 3.3 构建下游镜像（x86_64 宿主）
 
 ```bash
 # 必须用 legacy builder：BuildKit 在部分 NAS 上会卡住
 DOCKER_BUILDKIT=0 docker build -f deploy/downstream/Dockerfile \
-  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.5.2 -t rui-dot2:0.5.2 .
+  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.6.0 -t rui-dot2:0.6.0 .
 docker images | grep rui-dot2        # 期望 ≈368 MB
 ```
 
@@ -82,14 +82,14 @@ chmod 700 <部署目录>/dot2-secrets
 ```
 
 compose 用 `deploy/downstream/docker-compose.yml` 为模板：**去掉 `build:` 段**（镜像已预构建）、
-把 `image:` 指向 `rui-dot2:0.5.2`、保留 `./config ./data ./dot2-secrets` 三个挂载与 host 网络。
+把 `image:` 指向 `rui-dot2:0.6.0`、保留 `./config ./data ./dot2-secrets` 三个挂载与 host 网络。
 
 ### 3.5 写 `.env`（敏感值从用户给的凭据文件取，**不要打印**）
 
 关键项：
 
 ```dotenv
-RUI_IMAGE=rui-dot2:0.5.2
+RUI_IMAGE=rui-dot2:0.6.0
 RUI_UID=1000
 RUI_GID=1000
 RUI_LLM_KEY=...            # 从用户已有的 rui .env 迁移，或询问
@@ -111,7 +111,7 @@ DOT2_VOLUME_CAP=100
 # 镜像内一份由 Dockerfile COPY；宿主 data 目录一份给 catalog / wake 策略用
 sh deploy/downstream/install-plug-manifest.sh <部署目录>/data
 grep -E 'version|rui_compat' <部署目录>/data/plugs/dot2-echomuse/plugin.yaml
-# 期望 version 1.1.2+、rui_compat ">=0.3.0 <0.6.0"
+# 期望 version 1.2.0+、rui_compat ">=0.6.0 <0.7.0"
 ```
 
 ### 3.7 起容器

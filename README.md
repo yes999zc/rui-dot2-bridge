@@ -6,17 +6,18 @@
 不改 rui 源码：一个 out-of-tree adapter + 一个 Docker 下游镜像，设备侧 AEC 归设备。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![rui](https://img.shields.io/badge/rui-0.3.4%20→%200.5.2-blue)](https://github.com/yes999zc/rui)
+[![rui](https://img.shields.io/badge/rui-0.3.4%20→%200.6.0-blue)](https://github.com/yes999zc/rui)
 [![Device](https://img.shields.io/badge/device-Echo%20Dot%202%20RS03QR-8A2BE2)](#前提条件)
-[![Contract tests](https://img.shields.io/badge/plug--test-15%20PASS%20%2F%200%20FAIL-brightgreen)](docs/contract-report-0.5.2.json)
+[![Contract tests](https://img.shields.io/badge/plug--test-15%20PASS%20%2F%200%20FAIL-brightgreen)](docs/contract-report-0.6.0.json)
 
 </div>
 
 ---
 
 > **状态**：rui 0.5.1 上通过干净安装复测；rui **0.5.2** 上完成真机升级验证（`/devices/{id}/test` → `ok:true`，`/status` → `ready:true`，真实回合 `playback_gap_count=0`）。
+> 插件 **1.2.0** 面向 rui **0.6.0**：在候选镜像 `ghcr.io/yes999zc/rui:sha-7d1c1f8`（main @ `7d1c1f8`）上 `plug-test` **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**（镜像 tag/digest 见 [docs/contract-report-0.6.0.json](docs/contract-report-0.6.0.json)）。
 > 插件 **1.1.3** 起在 adapter 侧内置播放门控：**播放期间静音上行麦克风 + 播放后 2500 ms 静音**，barge 仍走设备唤醒事件（见[播放门控](#播放门控插件-113)）。
-> 上游契约自测 0.3.4 / 0.4.0 / 0.4.1 / 0.4.2 / 0.5.0 / 0.5.1 / 0.5.2 均为 **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**。
+> 上游契约自测 0.3.4 / 0.4.0 / 0.4.1 / 0.4.2 / 0.5.0 / 0.5.1 / 0.5.2 / 0.6.0（候选）均为 **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**。
 
 ## 🤖 如果你想让 agent 帮你安装（推荐）
 
@@ -29,7 +30,7 @@
 
 1. 先完整阅读仓库里的 README.md、docs/agent-install.md、docs/clean-install-0.5.0.md，
    再开始动手；不要凭记忆安装。
-2. 按 docs/agent-install.md 的检查清单核对前提条件（设备已解锁并刷好 EchoMuse、rui 0.5.0+
+2. 按 docs/agent-install.md 的检查清单核对前提条件（设备已解锁并刷好 EchoMuse、rui 0.6.0+
    已运行、Docker 宿主可用、8080/8870 端口等）；缺什么先列出来问我，不要猜。
 3. 严格按文档步骤执行：构建/切换下游镜像 → 安装 plug manifest → 写 .env/config 参数 →
    POST /api/v1/setup/device 添加设备 → 跑验收清单。任何一步失败先停下来把日志发给我。
@@ -52,10 +53,13 @@ Echo Dot 2 (EchoMuse 固件) ──wss:8870 + X-EM-Token──▶ rui-dot2-bridg
 ```
 
 - **不改 rui 源码**：以官方 `RUI_ADAPTER_PLUGINS` + `rui-device/v1` manifest 接入；rui 升级只需抬
-  `rui_compat` 上界（当前 `>=0.3.0 <0.6.0`）。
+  `rui_compat`（插件 1.2.0 为 `>=0.6.0 <0.7.0`：manifest 的 `audio_defaults` 是 rui 0.6 字段）。
 - **设备只做 I/O 和它自己的 AEC**：`ref_channels=0`，rui 侧 AEC 关闭；adapter 负责 TLS/帧协议/音量/响度/播放收尾。
 - **播放期静音上行（1.1.3+）**：播放期间静音麦克风、播放后保持 2500 ms 静音，堵住 rui
   `vad.hold()` 的 buffer-and-replay 自听；打断靠设备唤醒事件（`barge_via_device`），不靠麦克风。
+- **manifest 声明硬件音频默认（1.2.0+ / rui 0.6+）**：`devices/rs03qr.yaml` 的 `audio_defaults` 声明
+  16 kHz/1ch/0ref/S16 采集、48 kHz/1ch 播放与 `ack_echo_ignore_ms: 2500`，成为三层合并的最底层，
+  不再依赖部署侧手写这些值（见[音频默认](#音频默认插件-120-rui-06)）。
 - **一切 Docker**：官方镜像 + `deploy/downstream/Dockerfile` 构建下游镜像（adapter 层），host 网络跑在 NAS 上。
 - **契约优先**：每个 rui 版本都跑官方 `plug-test`，报告在 `docs/contract-report-*.json`。
 - **无私有依赖**：MIT；不包含、也不分发任何 Amazon 专有固件或密钥。
@@ -68,7 +72,7 @@ Echo Dot 2 (EchoMuse 固件) ──wss:8870 + X-EM-Token──▶ rui-dot2-bridg
 | 解锁 | 用 **[firebreak](https://github.com/yes999zc/firebreak)** 把它从 Amazon 固件解锁（基于 amonet） | 有变砖风险，按 firebreak 文档操作；解锁后可回 stock |
 | 固件 | **[EchoMuse](https://github.com/wilbowes/EchoMuse)**（第三方开源固件，MIT）**v2.19.0-ea.1 或更新**，装进 `server_b` 槽 | A/B 双槽 + 自动回滚，`server_a` 保留原厂固件可回退 |
 | 可选补丁 | **[echomuse-dot2-ref](https://github.com/yes999zc/echomuse-dot2-ref)**：上行加 2ch（beam + 去混叠播放参考） | 只在你想让 **rui 侧**做 AEC 时需要；默认 AEC 归设备，不需要 |
-| 控制器 | **[rui](https://github.com/yes999zc/rui) ≥ 0.5.0**，跑在同一局域网的 Docker 宿主（NAS / x86_64） | 需要 8080（控制台）、8870（设备 wss）、8872（响度，仅 loopback） |
+| 控制器 | **[rui](https://github.com/yes999zc/rui) ≥ 0.6.0**，跑在同一局域网的 Docker 宿主（NAS / x86_64） | 需要 8080（控制台）、8870（设备 wss）、8872（响度，仅 loopback） |
 | 设备凭据 | EchoMuse 的 TLS 材料（`ca.pem` / `server.pem` / `server.key`）+ `X-EM-Token` | 配对时生成；放部署目录 `dot2-secrets/`（0600，绝不进 git） |
 | 网络 | 设备与 rui 宿主同一局域网，设备能访问宿主 **8870** | 设备通过 `controller.json` 静态指向宿主 |
 | 宿主 | Docker Compose v2；x86_64 | 8C / 6G 级别足够，不需要 GPU |
@@ -102,7 +106,7 @@ cd rui-dot2-bridge
 
 # 2. 在 x86_64 宿主上构建下游镜像（官方 rui + adapter 层）
 DOCKER_BUILDKIT=0 docker build -f deploy/downstream/Dockerfile \
-  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.5.2 -t rui-dot2:0.5.2 .
+  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.6.0 -t rui-dot2:0.6.0 .
 
 # 3. 部署目录（示例 ~/rui）：compose + config + data + dot2-secrets
 #    参考 deploy/downstream/docker-compose.yml；dot2-secrets/ 放部署目录（0600）
@@ -111,7 +115,7 @@ DOCKER_BUILDKIT=0 docker build -f deploy/downstream/Dockerfile \
 sh deploy/downstream/install-plug-manifest.sh ~/rui/data
 
 # 5. .env 关键项（完整示例见 deploy/downstream/README.md）
-#    RUI_IMAGE=rui-dot2:0.5.2
+#    RUI_IMAGE=rui-dot2:0.6.0
 #    DOT2_SECRETS_DIR=/opt/rui-secrets
 #    DOT2_EQ_DIR=/opt/rui-secrets/eq        # 从设备拉出的 EQ_*.cfg（响度曲线）
 #    DOT2_VOLUME_CAP=100
@@ -126,12 +130,31 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/setup/device \
   -d '{"id":"dot2","adapter":"dot2","host":"<rui-host>","room":"客厅","volume":100}'
 ```
 
+### 音频默认（插件 1.2.0+ / rui 0.6+）
+
+rui 0.6 起音频参数按三层合并：**设备 manifest `audio_defaults`（最底层）< 全局 `config.yaml` 的
+`audio`/`ack`（显式写下的字段）< `devices[].audio`（单台设备覆盖）**。插件 1.2.0 在
+`devices/rs03qr.yaml` 里直接声明 Dot 2 的硬件默认：
+
+```yaml
+audio_defaults:
+  capture: {rate: 16000, channels: 1, mic_channels: 1, ref_channels: 0, bits: 16}
+  playback: {rate: 48000, channels: 1}
+  ack_echo_ignore_ms: 2500
+```
+
+因此新部署**不需要**再手写 `audio.capture`/`audio.playback`/`devices[].audio.voice.ack_echo_ignore_ms`
+就能拿到正确值；显式写下的配置仍然优先。**注意**：`audio_defaults` 是 rui-device/v1 的 0.6 字段，
+rui 0.5.x 的 loader 会以 "Extra inputs are not permitted" 拒绝含该字段的 manifest——插件 1.2.0 需要
+**rui 0.6.0+**；仍跑 0.5.x 的部署请继续用插件 1.1.3 + 部署侧配置。
+
 ### 播放门控（插件 1.1.3+）
 
 播放期间设备麦克风会听到自己的喇叭；rui 的 `vad.hold()` 又会把 ack/回声窗口内的音频**缓冲并在窗口
 放行后重放**，于是 cue 的回声会被当成用户请求（"自听"）。rui 0.5.3 的
 `devices[].audio.voice.ack_echo_ignore_ms` 只改变窗口长度，无法消除回放，所以插件 1.1.3 直接在
-adapter 侧静音上行：
+adapter 侧静音上行。rui 0.6 起插件 manifest 的 `audio_defaults.ack_echo_ignore_ms: 2500` 已经提供
+窗口默认值，部署侧不必再手写；0.5.x 部署仍可用 `devices[].audio.voice.ack_echo_ignore_ms`：
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
@@ -158,7 +181,7 @@ adapter 侧静音上行：
 
 ```bash
 docker run --rm --entrypoint python -e PYTHONPATH=/opt/rui-plugins \
-  -v "$PWD/src:/opt/rui-plugins:ro" ghcr.io/yes999zc/rui:0.5.2 \
+  -v "$PWD/src:/opt/rui-plugins:ro" ghcr.io/yes999zc/rui:0.6.0 \
   -m rui plug-test /opt/rui-plugins/rui_dot2_bridge \
   --adapter rui_dot2_bridge.adapter:build --json
 ```
@@ -170,7 +193,9 @@ docker run --rm --entrypoint python -e PYTHONPATH=/opt/rui-plugins \
 - **单设备 / 单音频面**：rui 0.5 的 `multi_device` 默认关闭；多卫星/多房间仲裁在 rui 后续版本。
 - **AEC 归设备**（`ref_channels=0`）：想让 rui 侧做 AEC 时，用上面提到的 2ch 参考补丁。
 - 播放门控由插件自带（1.1.3+）：播放期静音上行 + 播放后 2500 ms（见[播放门控](#播放门控插件-113)）；
-  rui 侧的 `devices[].audio.voice.post_playback_mute_ms` / `ack_echo_ignore_ms` 仍可叠加使用，但不再是必需。
+  rui 0.6+ 的 `ack_echo_ignore_ms=2500` 由 manifest `audio_defaults` 声明，rui 侧的
+  `devices[].audio.voice.post_playback_mute_ms` 仍可叠加使用，但不再是必需。
+- 插件 1.2.0 的 manifest 带 v1-only 的 `audio_defaults`，**rui 0.5.x 会拒绝加载**（需 0.6.0+）。
 - 上游 rui 的已知小问题（如设备已连接但 status 显示 `ready=false/token_missing`）见 [rui#7](https://github.com/yes999zc/rui/issues/7)。
 
 ## 文档
@@ -181,6 +206,7 @@ docker run --rm --entrypoint python -e PYTHONPATH=/opt/rui-plugins \
 | [deploy/downstream/](deploy/downstream/) | 下游镜像、compose、manifest 安装脚本 |
 | [docs/clean-install-0.5.0.md](docs/clean-install-0.5.0.md) | 0.5.0 干净安装手册（含回滚） |
 | [docs/clean-install-0.5.0-result.md](docs/clean-install-0.5.0-result.md) | 0.5.0 干净安装 + 验收记录 |
+| [docs/contract-report-0.6.0.json](docs/contract-report-0.6.0.json) | 官方 plug-test 报告（插件 1.2.0 / rui 0.6.0） |
 | [docs/contract-report-0.5.2.json](docs/contract-report-0.5.2.json) | 官方 plug-test 报告（同目录有 0.3.4 / 0.4.x / 0.5.0 / 0.5.1） |
 | [docs/oww-route-b-status.md](docs/oww-route-b-status.md) | 设备端唤醒（OWW）现状与路线 |
 | [docs/real-machine-round-1.md](docs/real-machine-round-1.md) | 真机验收第 1 轮记录 |
