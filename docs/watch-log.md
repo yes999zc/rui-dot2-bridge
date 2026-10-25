@@ -8,6 +8,7 @@
 | 2026-10-25 11:03 | **v0.4.0 镜像已发布**：ghcr 新增 `0.4`/`0.4.0`/`sha-9f13a0f`（digest `sha256:c4cd1a61…`，03:01:39Z），匿名可拉；#3/#7 仍 3 条评论、无新回复；我们仓库出现 #1 issue + #1 PR（compat 门禁，本队另一 session 创建，标注勿自行合并）；**0.4.2 未 tag，冷启动触发条件未满足** |
 | 2026-10-25 11:07 | **Lead 决策**：不用 0.4.0 起冷启动（9 哥要求等 0.4.2）；0.4.0 已发布（digest `sha256:c4cd1a61…`），契约复核：main 区间被拒 / PR#1 `<0.5.0` 通过；.34 保持 0.3.4。**rui 维护者 03:04Z 在 #3/#7 回复**（详见下） |
 | 2026-10-25 11:10 | **PR#1 已合入** `dd314cd`（rui_compat `>=0.3.0 <0.5.0`，无 adapter 改动）；合入后 plug-test：rui **0.3.4 与 0.4.0 均 15 PASS / 0 FAIL / 2 WARN / 5 SKIP，逐项一致**（报告 docs/contract-report-0.4.0.json）；已在 rui #3/#7 回报；**0.4.1** 将提供 `audio.voice.followup_delay_ms/replay` 与 `status.listen_port` 修复，届时用上游配置替换 adapter 的 `DOT2_PLAYBACK_GATE_MS`；**0.4.2 tag+digest 仍未出现，冷启动待触发** |
+| 2026-10-25 12:00 | **v0.4.1 已发布且可拉**：tag `v0.4.1`（`de7b17e`），ghcr `0.4.1`=`0.4` digest `sha256:380327e5…`（amd64+arm64，匿名 GET 200）；`latest` 随 main（`21761804…`）；Release 03:31:25Z；#7 新评论（03:32Z，第 6 条）要求合入 PR#1 后用 0.4.1 跑 plug-test + 真机回合/回滚，并列出 3 项相关修复（followup 可配置、生效端口/token_env、register 后 device_wake 重探测）；**0.4.2 未出现**；按 Lead 指令不部署 .34，仅信息与验证 |
 
 ### 2026-10-25 11:03 — v0.4.0 docker-publish 成功，镜像可用（0.4.2 仍未出现）
 
@@ -27,3 +28,10 @@
 - **更正**：我们仓库只有 **PR #1**（GitHub 编号共享；扫描脚本 own-issue 查询走 `/issues` 端点会把 PR 也列出，故 11:03 行"#1 issue + #1 PR"实为同一 PR）。该 PR 由 **rui 维护者** 开在我们仓库（PR 明示"请勿自行合并，由 repo owner 合并"）——11:03 详情里"属本队另一 session"作废。
 - 另：rui main 于 03:04:33Z 新增 docs-only 提交 `4fc4e96`（"docs: record the 0.4.0 re-cut, official image/release and green baseline"），再次触发 ci/docker-publish（03:06:38Z 仍 in_progress）。
 - 处置：**未在 rui 回复**（PR 合入决定属 Lead/9 哥，plug-test 回报须在合入后进行）；未改代码，仅本文件变更。
+
+### 2026-10-25 12:00 — v0.4.1 发布（0.4.1 = 0.4，latest 随 main）；#7 第 6 条评论
+
+- **产物**：tag `v0.4.1` → `de7b17e`；GitHub Release v0.4.1（03:31:25Z，非 draft）；ghcr `ghcr.io/yes999zc/rui:0.4.1` = `0.4`，OCI index digest `sha256:380327e5ca0796ac8656b6c195ce5de2258785a4eaf7cf7cee45e56191312668`，manifest 含 linux/amd64 + linux/arm64（另 2 个 unknown/unknown 为 attestation），匿名 GET manifest 返回 200 → **可拉**。`latest` 于 03:36:44Z 指向 main `sha-8f0317d`（digest `21761804…`），按上游说明 latest 随 main、digest 会变，**不要拿 latest 当 0.4.1 固定版本**。
+- **#7 评论要点（03:32:01Z，第 6 条）**：① 0.4.1 已发布，要求先合入 PR#1（已合 `dd314cd`），然后用 0.4.1 跑 `plug-test` 与一次真机回合 + 回滚；② **follow-up 可配置**：`audio.voice.followup_delay_ms`（默认 1000，0–10000）、`audio.voice.followup_replay`（默认 true），设备侧 AEC 插头建议 2500 / false，可撤掉 adapter 里的 `DOT2_PLAYBACK_GATE_MS` 门控，默认值不变、LX06 不回归；③ **生效端口/token_env**：`/devices`、`/{id}`、`/{id}/status`、`/{id}/connect` 与 setup 的 connect 证据显示 8870 / `DOT2_EM_TOKEN`，token rotation 也写 `DOT2_EM_TOKEN`，dot2 与 LX06 不再误判 4412 冲突；④ **register 后 device_wake 重探测**：probe 之后后台重试（12 次 × 5 s），设备拨入证明能力后自动切 v1 路径，预算用尽只记一次日志、KWS 不受影响；⑤ 已知边界：token rotation 只轮换 rui transport secret，不轮换设备内层 `X-EM-Token`，需要的话另立 adapter 契约。
+- **0.4.2**：tag/镜像均未出现 → 冷启动触发条件未满足。
+- **处置**：未部署、未重启 .34（保持 0.3.4），0.4.1 只做信息与非部署验证；是否在 0.4.1 上跑 plug-test / 真机回合由 Lead 定（建议非部署 plug-test 先跑，真机回合+回滚并入 0.4.2 冷启动窗口）。
