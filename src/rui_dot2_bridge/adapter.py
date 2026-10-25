@@ -115,6 +115,12 @@ PLAYBACK_LIVE_S = 0.35
 
 EOS_IDLE_S = 1.2
 PLAY_CHUNK_MS = 20        # re-chunk the device's 80 ms blocks for the plane
+#: Streams at or below this many seconds of content are cues/fillers ("在呢" is
+#: 490 ms), which arrive as one short file. They get a short EOS idle so their
+#: tail goes out promptly; a long reply keeps the 1.2 s idle that bridges the
+#: gaps between streamed sentences.
+SHORT_STREAM_S = 1.5
+SHORT_STREAM_EOS_IDLE_S = 0.15   # a cue is a finished file: flush it close
 #: A tail shorter than this is dropped at EOS instead of being played late.
 #: EOS fires one EOS_IDLE after the last full period, so the fragment would land
 #: 1.2 s after the reply: the device opens a one-period stream and its onset is
@@ -264,6 +270,7 @@ class Dot2Adapter(DeviceAdapter):
             os.environ.get("DOT2_EOS_IDLE_MS") or eos_idle_ms or int(EOS_IDLE_S * 1000)
         ) / 1000.0
         self._stream_started = False
+        self._stream_bytes = 0
         self._prebuffer_task: asyncio.Task | None = None
         # Playback gate: while our own audio is on the speaker, the residual echo
         # is what the controller's VAD/ASR hears as a user turn ("self-hearing").
@@ -637,6 +644,8 @@ class Dot2Adapter(DeviceAdapter):
         # tail is mixed into the first milliseconds of this one (a click after "在呢").
         if not self._playing:
             self._loudness.reset_stream()
+            self._stream_bytes = 0
+        self._stream_bytes += len(pcm)
         # Stock EQ curve follows the device's current level; then EQ + limiter.
         self._loudness.set_level(self._link.volume_level)
         pcm = self._loudness.process_bytes(pcm)
@@ -697,6 +706,10 @@ class Dot2Adapter(DeviceAdapter):
             del self._frame_buffer[:SPEAKER_CHUNK_BYTES]
             await self._link.send_pcm(chunk)
 
+    def _eos_delay(self) -> float:
+        short_bytes = int(SPEAKER_RATE * 2 * SHORT_STREAM_S)
+        return SHORT_STREAM_EOS_IDLE_S if self._stream_bytes <= short_bytes else self._eos_idle_s
+
     def _schedule_eos(self) -> None:
         if self._eos_task is not None:
             self._eos_task.cancel()
@@ -704,20 +717,30 @@ class Dot2Adapter(DeviceAdapter):
 
     async def _eos_after_idle(self) -> None:
         try:
-            await asyncio.sleep(self._eos_idle_s)
+            await asyncio.sleep(self._eos_delay())
         except asyncio.CancelledError:
             return
         if not self._playing or self._link is None:
             return
+        # A short stream can be shorter than the prebuffer: never end before the
+        # prebuffer has actually started it, or the whole buffer is mistaken for a
+        # tail (and later played late).
+        while self._playing and not self._stream_started and self._frame_buffer:
+            await asyncio.sleep(0.05)
+        if not self._playing:
+            return
         self._playing = False
         self._stream_started = False
         drop_bytes = int(SPEAKER_RATE * 2 * EOS_TAIL_DROP_MS / 1000.0)
-        if len(self._frame_buffer) < drop_bytes:
-            # A short remainder after the last whole period would open a 1-period
-            # stream one EOS_IDLE later: the "ghost" stream that pollutes
-            # primeWait/recvSpan and is heard as a click at its onset (the 20.7 ms
-            # tail of the 490 ms "在呢" cue, 2026-10-25). Dropping it is inaudible.
+        short_stream = self._stream_bytes <= int(SPEAKER_RATE * 2 * SHORT_STREAM_S)
+        if len(self._frame_buffer) < drop_bytes and not short_stream:
+            # Long reply: cutting the last period is inaudible (the word is long
+            # over) and beats a fragment played one idle later. A SHORT cue is the
+            # opposite: the cut lands on the last syllable ("在呢" -> the click
+            # heard with "呢"), so there the tail is played, windowed, and its
+            # short EOS idle keeps it close to the word (2026-10-25).
             self._frame_buffer.clear()
+            self._stream_bytes = 0
             await self._link.end_stream()
             return
         if self._frame_buffer:
@@ -729,9 +752,10 @@ class Dot2Adapter(DeviceAdapter):
                 tail += bytes(SPEAKER_CHUNK_BYTES - len(tail))
             self._frame_buffer.clear()
             await self._link.send_pcm(tail)
+        self._stream_bytes = 0
         await self._link.end_stream()
         self._flush_dump()
-        log.debug("dot2 adapter: stream ended (idle %.0f ms)", EOS_IDLE_S * 1000)
+        log.debug("dot2 adapter: stream ended (idle %.0f ms)", self._eos_delay() * 1000)
 
     async def stop_playback(self, fade_ms: int = 120) -> None:
         """The device drops everything it has buffered: barge-in stops the sound now.

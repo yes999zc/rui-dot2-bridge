@@ -140,13 +140,27 @@ class PlaybackTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.adapter.play(bytes(100), sample_rate=48000, channels=2)
 
-    async def test_idle_drops_a_short_tail_instead_of_playing_it_late(self) -> None:
-        # 5000 B = one 4096 B period + 904 B (10.6 ms) tail. EOS owns one idle
-        # later, so that tail would be an onset click ("在呢", 2026-10-25).
+    async def test_short_stream_plays_a_windowed_tail_promptly(self) -> None:
+        # 5000 B = one 4096 B period + 904 B (10.6 ms) tail, and the whole stream
+        # is a short cue: cutting the period would click on the last syllable
+        # ("在呢", 2026-10-25), so the tail goes out windowed after a short idle.
         await self.adapter.play(bytes(5000), sample_rate=48000, channels=1)
-        await asyncio.sleep(1.5)  # EOS_IDLE_S is 1.2
+        await asyncio.sleep(0.8)  # short streams use SHORT_STREAM_EOS_IDLE_S=0.3
         self.assertEqual(self.link.eos, 1)
-        self.assertEqual(len(self.link.sent), 1)  # no ghost one-period stream
+        self.assertEqual(len(self.link.sent), 2)
+        self.assertEqual(len(self.link.sent[-1]), SPEAKER_CHUNK_BYTES)  # padded
+        self.assertEqual(self.link.sent[-1][:2], b"\x00\x00")  # faded in
+        self.assertEqual(self.link.sent[-1][-2:], b"\x00\x00")  # faded out
+
+    async def test_long_stream_drops_a_short_tail_instead_of_playing_it_late(self) -> None:
+        # A 1.5 s+ stream ending with a 904 B tail: the word is long over, so the
+        # fragment is dropped rather than played one idle later.
+        self.adapter._prebuffer_bytes = 0
+        await self.adapter.play(bytes(SPEAKER_CHUNK_BYTES * 36 + 904),
+                                sample_rate=48000, channels=1)
+        await asyncio.sleep(1.5)  # long streams keep EOS_IDLE_S=1.2
+        self.assertEqual(self.link.eos, 1)
+        self.assertEqual(len(self.link.sent), 36)  # no fragment, no ghost stream
 
     async def test_idle_fades_a_long_tail_and_pads_it(self) -> None:
         # 4096 + 3000 B (31.25 ms) is longer than the drop threshold: it is owed
