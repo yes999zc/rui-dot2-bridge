@@ -9,6 +9,7 @@
 | 2026-10-25 11:07 | **Lead 决策**：不用 0.4.0 起冷启动（9 哥要求等 0.4.2）；0.4.0 已发布（digest `sha256:c4cd1a61…`），契约复核：main 区间被拒 / PR#1 `<0.5.0` 通过；.34 保持 0.3.4。**rui 维护者 03:04Z 在 #3/#7 回复**（详见下） |
 | 2026-10-25 11:10 | **PR#1 已合入** `dd314cd`（rui_compat `>=0.3.0 <0.5.0`，无 adapter 改动）；合入后 plug-test：rui **0.3.4 与 0.4.0 均 15 PASS / 0 FAIL / 2 WARN / 5 SKIP，逐项一致**（报告 docs/contract-report-0.4.0.json）；已在 rui #3/#7 回报；**0.4.1** 将提供 `audio.voice.followup_delay_ms/replay` 与 `status.listen_port` 修复，届时用上游配置替换 adapter 的 `DOT2_PLAYBACK_GATE_MS`；**0.4.2 tag+digest 仍未出现，冷启动待触发** |
 | 2026-10-25 12:00 | **v0.4.1 已发布且可拉**：tag `v0.4.1`（`de7b17e`），ghcr `0.4.1`=`0.4` digest `sha256:380327e5…`（amd64+arm64，匿名 GET 200）；`latest` 随 main（`21761804…`）；Release 03:31:25Z；#7 新评论（03:32Z，第 6 条）要求合入 PR#1 后用 0.4.1 跑 plug-test + 真机回合/回滚，并列出 3 项相关修复（followup 可配置、生效端口/token_env、register 后 device_wake 重探测）；**0.4.2 未出现**；按 Lead 指令不部署 .34，仅信息与验证 |
+| 2026-10-25 12:02 | Lead 已回 **#7**（0.4.1 ack：plug-test 报告、真机回合/回滚并入 0.4.2 冷启动、followup 配置与撤门控计划、token rotation 边界）；**真机验证只能受控切换**——Dot `controller.json` 只拨 8870、同刻仅能一个进程监听 8870，"独立临时实例"不可行，须 停 0.3.4 → 起 0.4.1 → 验 → 回滚（需 9 哥同意）；继续盯 0.4.2 tag+可拉 digest；`latest` 随 main、0.4.x 固定映射 `0.4` |
 
 ### 2026-10-25 11:03 — v0.4.0 docker-publish 成功，镜像可用（0.4.2 仍未出现）
 
@@ -35,3 +36,9 @@
 - **#7 评论要点（03:32:01Z，第 6 条）**：① 0.4.1 已发布，要求先合入 PR#1（已合 `dd314cd`），然后用 0.4.1 跑 `plug-test` 与一次真机回合 + 回滚；② **follow-up 可配置**：`audio.voice.followup_delay_ms`（默认 1000，0–10000）、`audio.voice.followup_replay`（默认 true），设备侧 AEC 插头建议 2500 / false，可撤掉 adapter 里的 `DOT2_PLAYBACK_GATE_MS` 门控，默认值不变、LX06 不回归；③ **生效端口/token_env**：`/devices`、`/{id}`、`/{id}/status`、`/{id}/connect` 与 setup 的 connect 证据显示 8870 / `DOT2_EM_TOKEN`，token rotation 也写 `DOT2_EM_TOKEN`，dot2 与 LX06 不再误判 4412 冲突；④ **register 后 device_wake 重探测**：probe 之后后台重试（12 次 × 5 s），设备拨入证明能力后自动切 v1 路径，预算用尽只记一次日志、KWS 不受影响；⑤ 已知边界：token rotation 只轮换 rui transport secret，不轮换设备内层 `X-EM-Token`，需要的话另立 adapter 契约。
 - **0.4.2**：tag/镜像均未出现 → 冷启动触发条件未满足。
 - **处置**：未部署、未重启 .34（保持 0.3.4），0.4.1 只做信息与非部署验证；是否在 0.4.1 上跑 plug-test / 真机回合由 Lead 定（建议非部署 plug-test 先跑，真机回合+回滚并入 0.4.2 冷启动窗口）。
+
+### 2026-10-25 12:02 — Lead 已回 #7（0.4.1 ack）；真机验证只能受控切换
+
+- **#7 处置**：由 Lead 直接回帖（2026-10-25T04:02:12Z，第 7 条）：0.4.1 确认 + plug-test 报告 + 真机回合/回滚并入 0.4.2 冷启动窗口 + followup 配置与撤 adapter 门控计划 + token rotation 边界；rui-watch 不再回帖，只做记录与守望。
+- **约束（记入以免重复讨论）**：不在 .34 另起"独立临时实例"做 0.4.1 验证——Dot 的 `controller.json` 只拨 8870，同一时刻只能有一个进程监听 8870，因此真机验证本质是"停 0.3.4 → 起 0.4.1 → 验 → 回滚"的一次受控切换，**须 9 哥同意后才执行**；未经同意不动 .34。
+- **监控口径**：`latest` 随 main 走、digest 会变；0.4.x 固定映射 `0.4` 与 release 版本；冷启动仍以 **tag `0.4.2` + 可拉 digest** 为唯一触发条件。
