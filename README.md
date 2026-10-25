@@ -58,6 +58,18 @@ EchoMuse controller 是一个和 rui 竞争的全栈助手（HA Assist + ESPHome
 | rui 生产部署（NAS） | ⬜ 待 NAS 部署目录 + 验收日镜像更新；override/runbook 已备好 |
 | 旧 EchoMuse controller | 容器保留可启动，默认停止（30% 音量约束） |
 
+## rui 0.3.4 接入（官方入口）
+
+0.3.x 的 out-of-tree adapter 入口是 **`RUI_ADAPTER_PLUGINS` + 插件 manifest**，不再使用
+`PYTHONPATH` + `sitecustomize.py` 注入（后者已从支持路径移除）。本包把声明放在
+`src/rui_dot2_bridge/plugin.yaml` 与 `src/rui_dot2_bridge/devices/rs03qr.yaml`
+（`rui-device/v1`，插件 id `dot2-echomuse`、设备 id `dot2`）：rui 的 device loader 会在
+adapter 模块同目录发现它，并据此放行 `RUI_ADAPTER_PLUGINS=dot2=rui_dot2_bridge.adapter:build`。
+
+音频面的 `_wake_policy` 与 PlugCatalog 只读 `<data_dir>/plugs/<dir>/plugin.yaml`，所以同一份
+manifest 还要安装到 `<data_dir>/plugs/dot2-echomuse/`（`deploy/downstream/install-plug-manifest.sh`）。
+`device_wake` 是 opt-in：设备端没有我们唤醒词的 OWW 模型时 `probe()` 不会声明该能力，RUI 回退 KWS。
+
 ## 独立测试实例
 
 旧方案（systemd + venv + rui 0.1.3，8095/8870/8872）已于 2026-10-24 整体删除。
@@ -95,7 +107,7 @@ docs/plug-socket-contract.md  插头/插座 工作界面（rui 定义插座、�
 docs/milestone-m1.md    M1 验收清单 + NAS 一次性部署流程（本地磨平 → NAS 验证）
 docs/deploy.md          部署与回滚 runbook
 src/rui_dot2_bridge/    adapter 实现（Phase 1 起填充）
-src/sitecustomize.py    注入 rui 进程完成 adapter 注册（不改 rui 仓库）
+src/rui_dot2_bridge/plugin.yaml + devices/  v1 插头声明（官方入口：RUI_ADAPTER_PLUGINS）
 scripts/check.sh        一条命令自检：语法 / 单测 / 配置 / ruff / doctor
 scripts/doctor.py       部署前体检（证书、配置、端口、rui、设备音量上限）
 scripts/device_health.py  设备侧健康快照（mic 连续流 / AEC / 音量 / 内存 / 连的是谁）
@@ -112,7 +124,7 @@ ROADMAP.md              分阶段计划与验收标准
 
 ## 不做
 
-- 不改 rui 仓库的源码；接入只走 `PYTHONPATH` + `sitecustomize.py` 注册。
+- 不改 rui 仓库的源码；接入只走官方 `RUI_ADAPTER_PLUGINS` + 插件 manifest（`sitecustomize` 注入已移除）。
 - 不重刷设备、不重新配网、不切 emOS（Phase 3 若需要多声道才动固件）。
 - 不在 Dot 上跑 ASR/LLM（483 MB 内存）。
 - 不动小爱（LX06）那条链路。

@@ -10,10 +10,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 import unittest
 
 import websockets.asyncio.client as ws_client
+from rui.device.contract import Capability, wake_validation_error
 
+from rui_dot2_bridge.adapter import Dot2Adapter
 from rui_dot2_bridge.device_link import DeviceLink
 from rui_dot2_bridge.frames import (
     FRAME_MIC,
@@ -38,7 +41,12 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.link.stop)
 
     @contextlib.asynccontextmanager
-    async def _control(self, token: str = "secret", device_id: str = "D090"):
+    async def _control(
+        self,
+        token: str = "secret",
+        device_id: str = "D090",
+        capabilities: list[str] | None = None,
+    ):
         """Open /control and complete the handshake, yielding the socket."""
         headers = {"X-EM-Token": token} if token else {}
         async with ws_client.connect(
@@ -50,12 +58,17 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
                         "type": "register",
                         "device_id": device_id,
                         "version": "v2.18.1",
-                        "capabilities": ["mic", "speaker"],
+                        "capabilities": capabilities or ["mic", "speaker"],
                         "ip": "192.168.5.69",
                     }
                 )
             )
             yield ws
+
+    async def _handshake(self, ctl) -> None:
+        """Consume ack, volume_set, config and mic_start."""
+        for _ in range(4):
+            await asyncio.wait_for(ctl.recv(), 2)
 
     async def test_handshake_messages(self) -> None:
         async with self._control() as ws:
@@ -151,6 +164,150 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
             await ctl.send(json.dumps({"type": "volume_state", "level": 10}))
             with self.assertRaises(asyncio.TimeoutError):
                 await asyncio.wait_for(ctl.recv(), 0.4)
+
+    async def test_oww_wake_is_queued_and_drained_once(self) -> None:
+        async with self._control() as ctl:
+            await self._handshake(ctl)
+            await ctl.send(
+                json.dumps(
+                    {
+                        "type": "oww_wake",
+                        "score": 0.92,
+                        "threshold": 0.5,
+                        "ageMs": 120,
+                        "capturedMono": True,
+                        "barge": False,
+                        "level": -18.5,
+                    }
+                )
+            )
+            await asyncio.sleep(0.05)
+            events = self.link.drain_wakes()
+            self.assertEqual(len(events), 1)
+            event = events[0]
+            self.assertAlmostEqual(event.score, 0.92)
+            self.assertAlmostEqual(event.threshold, 0.5)
+            self.assertIs(event.barge, False)
+            self.assertEqual(event.source, "device")
+            self.assertEqual(self.link.drain_wakes(), [])
+        self.assertEqual(self.link.stats.wake_events, 1)
+        self.assertEqual(self.link.stats.invalid_wakes, 0)
+
+    async def test_invalid_oww_wake_is_counted_not_queued(self) -> None:
+        async with self._control() as ctl:
+            await self._handshake(ctl)
+            for message in (
+                {"type": "oww_wake", "score": 0.2, "threshold": 0.5},
+                {"type": "oww_wake", "score": 0.9, "threshold": 0.5, "barge": "maybe"},
+                {"type": "oww_wake", "score": 0.9, "threshold": 0},
+            ):
+                await ctl.send(json.dumps(message))
+            await asyncio.sleep(0.1)
+            self.assertEqual(self.link.drain_wakes(), [])
+        self.assertEqual(self.link.stats.invalid_wakes, 3)
+        self.assertEqual(self.link.stats.wake_events, 0)
+
+    async def test_wake_queue_is_bounded_to_32(self) -> None:
+        async with self._control() as ctl:
+            await self._handshake(ctl)
+            for index in range(40):
+                await ctl.send(
+                    json.dumps(
+                        {"type": "oww_wake", "score": 0.9, "threshold": 0.5, "ageMs": index}
+                    )
+                )
+            await asyncio.sleep(0.3)
+            events = self.link.drain_wakes()
+        self.assertEqual(len(events), 32)
+        self.assertEqual(self.link.wakes.dropped, 8)
+        self.assertGreater(events[0].ts_ms, events[-1].ts_ms)
+
+    async def test_device_wake_needs_local_scorer_and_listen_state(self) -> None:
+        self.link.oww_on_device = "on"
+        async with self._control() as ctl:
+            await self._handshake(ctl)
+            self.assertFalse(self.link.device_wake_available)
+        async with self._control(capabilities=["mic", "speaker", "oww_local_only"]) as ctl:
+            await self._handshake(ctl)
+            await ctl.send(json.dumps({"type": "listen_state", "state": "remote"}))
+            await asyncio.sleep(0.05)
+            self.assertFalse(self.link.device_wake_available)
+            await ctl.send(json.dumps({"type": "listen_state", "state": "local"}))
+            await asyncio.sleep(0.05)
+            self.assertTrue(self.link.device_wake_available)
+
+
+class AdapterWakePathTest(unittest.IsolatedAsyncioTestCase):
+    """The real path: link producer -> adapter queue -> rui DeviceWake."""
+
+    async def asyncSetUp(self) -> None:
+        self.adapter = Dot2Adapter(
+            "dot2",
+            host="127.0.0.1",
+            secrets_dir="secrets",
+            oww_on_device="on",
+            oww_model="hey_rui.onnx",
+        )
+        self.link = DeviceLink(
+            tls_port=None,
+            plain_port=0,
+            oww_on_device="on",
+            wake_word_enabled=True,
+            wake_queue=self.adapter._wakes,
+        )
+        await self.link.start()
+        self.port = self.link.bound_ports["plain"]
+        self.adapter._link = self.link
+        self.addCleanup(self.link.stop)
+
+    async def test_probe_and_drain_over_a_local_scorer_link(self) -> None:
+        async with ws_client.connect(f"ws://127.0.0.1:{self.port}/control") as ws:
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "register",
+                        "device_id": "D090",
+                        "version": "v2.18.1",
+                        "capabilities": ["mic", "speaker", "oww_local_only"],
+                    }
+                )
+            )
+            for _ in range(4):
+                await asyncio.wait_for(ws.recv(), 2)
+            # Capability claimed but the local scorer has not reported ownership.
+            info = await self.adapter.probe()
+            self.assertNotIn(Capability.DEVICE_WAKE, info.capabilities)
+
+            await ws.send(json.dumps({"type": "listen_state", "state": "local"}))
+            await asyncio.sleep(0.05)
+            info = await self.adapter.probe()
+            self.assertIn(Capability.DEVICE_WAKE, info.capabilities)
+            self.assertIn(Capability.BARGE_VIA_DEVICE, info.capabilities)
+
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "oww_wake",
+                        "score": 0.93,
+                        "threshold": 0.5,
+                        "ageMs": 80,
+                        "capturedMono": True,
+                        "barge": True,
+                        "level": -17.0,
+                    }
+                )
+            )
+            await asyncio.sleep(0.05)
+            events = self.adapter.drain_wakes()
+
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event.source, "device")
+        self.assertIs(event.barge, True)
+        # Exactly the v1 shape/range/staleness rules; the kit uses this helper.
+        self.assertIsNone(
+            wake_validation_error(event, now_ms=time.monotonic() * 1000.0)
+        )
 
 
 class VolumeMathTest(unittest.TestCase):

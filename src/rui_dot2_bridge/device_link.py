@@ -40,6 +40,7 @@ from .frames import (
     split_playback,
 )
 from .volume import DEVICE_LEVEL_MAX, VOLUME_CAP_PERCENT, capped_level
+from .wake import MAX_PENDING_WAKES, BoundedWakeQueue, map_oww_wake
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,8 @@ class LinkStats:
     dropped_audio: int = 0
     rtt_ms: float | None = None
     last_mic_at: float = 0.0
+    wake_events: int = 0
+    invalid_wakes: int = 0
 
 
 @dataclass
@@ -99,7 +102,9 @@ class DeviceLink:
         barge_in_threshold: float | None = None,
         wake_mic: int | None = None,
         aec_ref_source: str | None = None,
-        oww_on_device: str = "off",
+        oww_on_device: str | None = "off",
+        wake_queue: BoundedWakeQueue | None = None,
+        wake_word_enabled: bool | None = None,
         on_button: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self.certs_dir = Path(certs_dir) if certs_dir else None
@@ -132,6 +137,18 @@ class DeviceLink:
         self.wake_mic = wake_mic
         self.aec_ref_source = aec_ref_source
         self.oww_on_device = oww_on_device
+        # One bounded, thread-safe queue per device: the control socket is the
+        # producer and rui's audio plane is the single drainer (v1 section 4.2).
+        # An adapter may pass its own queue so wake injection works before open().
+        self.wakes = wake_queue if wake_queue is not None else BoundedWakeQueue(
+            MAX_PENDING_WAKES
+        )
+        self.wake_word_enabled = (
+            bool(wake_word_enabled)
+            if wake_word_enabled is not None
+            else self.oww_on_device == "on"
+        )
+        self._listen_state = ""
         self.on_button = on_button
 
         self.stats = LinkStats()
@@ -204,6 +221,8 @@ class DeviceLink:
             await server.wait_closed()
         self._servers.clear()
         self.connected.clear()
+        # close() must stop future events too: the queue is drained by rui.
+        self.wakes.clear()
 
     async def wait_connected(self, timeout: float | None = None) -> bool:
         try:
@@ -304,8 +323,9 @@ class DeviceLink:
                 {
                     "type": "config",
                     "startupVolume": self._volume_level,
-                    "owwOnDevice": self.oww_on_device,
-                    "wakeWordEnabled": False,
+                    **({"owwOnDevice": self.oww_on_device}
+                       if self.oww_on_device is not None else {}),
+                    "wakeWordEnabled": self.wake_word_enabled,
                     "aecEnabled": self.aec_enabled,
                     **({"micGainDb": self.mic_gain_db} if self.mic_gain_db is not None else {}),
                     **({"aecTailMs": self.aec_tail_ms} if self.aec_tail_ms is not None else {}),
@@ -370,9 +390,51 @@ class DeviceLink:
             self._device_log.append(line)
             log.debug(line)
         elif kind == "listen_state":
-            log.info("dot2 link: listen_state=%s", message.get("state"))
+            self._listen_state = str(message.get("state") or "").strip().lower()
+            log.info("dot2 link: listen_state=%s", self._listen_state or "?")
+        elif kind == "oww_wake":
+            self._on_oww_wake(message)
         else:
             log.debug("dot2 link: control %s", kind)
+
+    def _on_oww_wake(self, message: dict[str, Any]) -> None:
+        """Queue one device-detected wake; an invalid report is counted, not raised."""
+        event, reason = map_oww_wake(message, now_ms=time.monotonic() * 1000.0)
+        if event is None:
+            self.stats.invalid_wakes += 1
+            log.warning("dot2 link: ignored oww_wake (%s)", reason)
+            return
+        self.stats.wake_events += 1
+        self.wakes.push(event)
+        if event.barge:
+            log.info(
+                "dot2 link: oww_wake barge hint (score %.2f, level %s)",
+                event.score,
+                event.level,
+            )
+        else:
+            log.debug("dot2 link: oww_wake queued (score %.2f)", event.score)
+
+    def drain_wakes(self) -> list:
+        """Return every pending device wake once (v1 section 4.2); [] after close."""
+        if self._closing:
+            return []
+        return self.wakes.drain()
+
+    @property
+    def device_wake_available(self) -> bool:
+        """Whether the live link proves on-device scoring of OUR wake word.
+
+        The EchoMuse firmware advertises feature "oww_local_only" when its local
+        scoring path exists and reports listen_state="local" once that scorer owns
+        the microphone. Both must be present, and the controller must have opted in
+        by pushing owwOnDevice=on. Advertising device_wake optimistically would be a
+        contract violation, so anything less than this is a false.
+        """
+        if self.oww_on_device != "on":
+            return False
+        capabilities = {str(capability).lower() for capability in self.info.capabilities}
+        return "oww_local_only" in capabilities and self._listen_state == "local"
 
     async def _ping_loop(self) -> None:
         while True:

@@ -1,0 +1,11 @@
+schema: rui-plugin/v0
+id: dot2-echomuse
+name: "Echo Dot 2 (EchoMuse) plug"
+version: 1.1.0
+rui_compat: ">=0.3.0 <0.4.0"
+license: MIT
+maintainer: "Bakey Zhang"
+homepage: "https://github.com/yes999zc/rui-dot2-bridge"
+trust: trusted
+devices:
+  - devices/rs03qr.yaml

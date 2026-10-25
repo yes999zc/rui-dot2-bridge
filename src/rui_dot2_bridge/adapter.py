@@ -1,13 +1,15 @@
 """rui-side adapter: the Dot 2 as an inbound voice satellite.
 
 This is the object rui's audio plane calls. It owns a :class:`DeviceLink` (the
-controller the device dials) and translates between it and the adapter
-contract in ``house_ear.device.contract``.
+controller the device dials) and translates between it and the Socket & Plug v1
+contract in ``rui.device.contract`` (docs/socket-plug-v1.md at rui 0.3.4).
 
 Capabilities are stated honestly: the stock firmware sends one mono 16 kHz
 channel and *no* playback reference, so this adapter advertises neither
-``REFERENCE`` nor ``MIC_ARRAY``. rui then turns AEC and barge-in off with a
-reason, instead of planning features the device cannot do.
+``REFERENCE`` nor ``MIC_ARRAY``. rui then turns AEC off with a reason, instead
+of planning features the device cannot do. ``DEVICE_WAKE``/``BARGE_VIA_DEVICE``
+are only reported by ``probe()`` once the live link proves the device can score
+our wake word (manifest intersect probe is the v1 gate).
 """
 
 from __future__ import annotations
@@ -17,16 +19,23 @@ import logging
 import os
 import time
 import wave
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from house_ear.device.contract import (
+from rui.device.contract import (
+    MAX_PENDING_WAKES,
     AudioFrame,
+    BoundedWakeQueue,
     Capability,
     DeviceAdapter,
     DeviceInfo,
+    DeviceWake,
     Transport,
+    device_volume_to_percent,
+    percent_to_device_volume,
 )
 
 from . import plug as plug_manifest
@@ -81,7 +90,8 @@ class _Dot2Services:
         return self._adapter.volume_255()
 
     async def set_volume(self, volume: int) -> None:
-        await self._adapter.set_volume_255(int(volume))
+        # Device mixer unit (0-255): the adapter validates it, no silent coercion.
+        await self._adapter.set_volume_255(volume)  # type: ignore[arg-type]
 
 
 DEFAULT_TLS_PORT = 8870
@@ -102,6 +112,18 @@ PREBUFFER_START_S = 0.35   # a short reply may never reach the threshold: start 
 EOS_IDLE_S = 1.2
 PLAY_CHUNK_MS = 20        # re-chunk the device's 80 ms blocks for the plane
 
+#: Default env var holding the EchoMuse X-EM-Token (inner auth). It must NOT be
+#: rui's own transport token (RUI_DEVICE_TOKEN is a different secret); rui's
+#: manifest-derived runtime default resolves DeviceConfig.token_env to this name.
+DEFAULT_TOKEN_ENV = "DOT2_EM_TOKEN"
+#: Device-side wake is opt-in. Stock EchoMuse ships no Chinese OWW model, so a
+#: deployment must name the model its firmware runs before it is enabled.
+DEFAULT_OWW_MODEL = ""
+#: rui probes once right after open() and caches the device_wake decision. If the
+#: device is already dialing, this bounded wait lets it register first; it stays
+#: well under rui's 5 s probe timeout and only applies when wake is configured.
+PROBE_WAKE_WAIT_S = 1.0
+
 
 class Dot2Adapter(DeviceAdapter):
     """Echo Dot 2 running EchoMuse firmware, driven by rui instead of EchoMuse."""
@@ -119,8 +141,11 @@ class Dot2Adapter(DeviceAdapter):
         push_config: bool = True,
         aec_enabled: bool = True,
         oww_on_device: str = "off",
+        oww_model: str = DEFAULT_OWW_MODEL,
+        plug_id: str = "",
         inject_port: int | None = None,
         mic_channels: int = 1,
+        mic_gain_db: int | None = None,
         ref_channels: int = 0,
         prebuffer_ms: int | None = None,
         prebuffer_start_ms: int | None = None,
@@ -159,6 +184,18 @@ class Dot2Adapter(DeviceAdapter):
         _wake_mic = os.environ.get("DOT2_WAKE_MIC", "").strip()
         self._wake_mic = int(_wake_mic) if _wake_mic else None
         self._aec_ref_source = os.environ.get("DOT2_AEC_REF_SOURCE", "").strip() or None
+        # Device-side wake. Off by default: the firmware can only score a wake
+        # word whose OWW model was pushed to the device, and stock EchoMuse has
+        # no model for ours. A deployment opts in by naming the model via
+        # params.oww_model / DOT2_OWW_MODEL; only then do we push owwOnDevice.
+        self.oww_on_device = (oww_on_device or "off").strip().lower()
+        self.oww_model = str(oww_model or "").strip()
+        self._push_oww = bool(self.oww_model)
+        self.plug_id = str(plug_id or "").strip()
+        # Bounded, thread-safe queue for device wakes (v1 section 4.2). The
+        # control socket produces; rui's audio plane drains via drain_wakes().
+        self._wakes = BoundedWakeQueue(MAX_PENDING_WAKES)
+        self._closed = False
         self._link: DeviceLink | None = None
         self._link_kwargs = {
             "certs_dir": Path(secrets_dir),
@@ -177,12 +214,18 @@ class Dot2Adapter(DeviceAdapter):
             "barge_in_threshold": self._barge_in_threshold,
             "wake_mic": self._wake_mic,
             "aec_ref_source": self._aec_ref_source,
-            "oww_on_device": oww_on_device,
+            "oww_on_device": self.oww_on_device if self._push_oww else None,
+            "wake_queue": self._wakes,
+            "wake_word_enabled": self.oww_on_device == "on",
         }
         self._inject_port = inject_port
         # +24 dB (the device default) clips normal speech; 18 dB keeps the peaks
         # inside full scale. Override with DOT2_MIC_GAIN_DB=24 to go back.
-        self._mic_gain_db = int(os.environ.get("DOT2_MIC_GAIN_DB", "18") or 18)
+        self._mic_gain_db = int(
+            mic_gain_db
+            if mic_gain_db is not None
+            else (os.environ.get("DOT2_MIC_GAIN_DB", "18") or 18)
+        )
         # Debug: capture exactly what we hand to the device (DOT2_PLAYBACK_DUMP=dir).
         # Used to tell a gap in our processed PCM from a stream split on the wire.
         self._prebuffer_ms = int(
@@ -240,6 +283,10 @@ class Dot2Adapter(DeviceAdapter):
         # person in the room (e.g. feed it to /api/v1/asr). Off unless asked for.
         self._record_path = os.environ.get("DOT2_RECORD") or ""
         self._record_wav: wave.Wave_write | None = None
+        # Base capabilities only. DEVICE_WAKE/BARGE_VIA_DEVICE are added by
+        # probe() when (and only when) the live link proves the device can score
+        # our wake word: manifest intersect probe is the v1 gate, so an
+        # optimistic claim here would activate a path that can never fire.
         capabilities: set[Capability] = {
             Capability.PLAYBACK, Capability.VOLUME, Capability.LED,
         }
@@ -291,10 +338,23 @@ class Dot2Adapter(DeviceAdapter):
         return round(max(0, min(DEVICE_LEVEL_MAX, int(level))) * 255 / DEVICE_LEVEL_MAX)
 
     async def read_volume(self) -> int | None:
+        """Mixer value in the v1 low-level unit (0-255), or None if unreadable."""
         return self.volume_255()
 
     async def set_volume_255(self, volume: int) -> None:
-        await self.set_volume(round(max(0, min(255, volume)) * 100 / 255))
+        """Low-level mixer write, 0-255 (DeviceServices unit).
+
+        v1 section 4.1: implementations reject out-of-range values instead of
+        silently clamping, and the 0-100 config/UI unit is converted only via
+        the contract helpers. 0 is in range; config volume=0 means 'unmanaged'
+        so core never sends it.
+        """
+        if isinstance(volume, bool) or not isinstance(volume, int) or not 0 <= volume <= 255:
+            raise ValueError(f"device volume must be an int in 0..255 (got {volume!r})")
+        if self._link is None:
+            return
+        percent = device_volume_to_percent(volume)
+        await self._link.set_volume_percent(clamp_percent(percent, self.volume_cap_percent))
 
     def health(self) -> dict:
         """The plane's `speaker_connected` and the console read this."""
@@ -316,6 +376,18 @@ class Dot2Adapter(DeviceAdapter):
             "dropped_audio": link.stats.dropped_audio,
             "volume_level": link.volume_level,
             "volume_cap_percent": link.volume_cap_percent,
+            "plug_id": self.plug_id,
+            # Device-side wake is reported honestly: available only with a live
+            # link that proved local scoring; queue counters are diagnostic.
+            "device_wake": {
+                "oww_on_device": self.oww_on_device,
+                "oww_model": self.oww_model,
+                "available": link.device_wake_available,
+                "pending": len(self._wakes),
+                "dropped": self._wakes.dropped,
+                "events": link.stats.wake_events,
+                "invalid": link.stats.invalid_wakes,
+            },
             "loudness": {
                 "enabled": self._loudness.config.enabled,
                 "mode": self._loudness.config.mode,
@@ -328,9 +400,79 @@ class Dot2Adapter(DeviceAdapter):
 
     # ---------------------------------------------------------------- contract
     async def probe(self) -> DeviceInfo:
-        return self.info
+        """Report the live capabilities; device_wake needs proof, not intent.
+
+        The manifest declares what the plug enables; probe() reports what the
+        connected device actually proved. DEVICE_WAKE/BARGE_VIA_DEVICE are only
+        added when DeviceLink saw both the oww_local_only feature and
+        listen_state=local, which is the only evidence that on-device scoring of
+        our wake word exists. Otherwise RUI stays on its own KWS path by design.
+        """
+        capabilities = set(self.info.capabilities)
+        link = self._link
+        if link is not None and self._push_oww and not link.connected.is_set():
+            # Honest, bounded: only a device that is already dialing can register
+            # in time. A device that connects later is covered by a re-probe.
+            await link.wait_connected(timeout=PROBE_WAKE_WAIT_S)
+        if link is not None and link.device_wake_available:
+            capabilities.add(Capability.DEVICE_WAKE)
+            capabilities.add(Capability.BARGE_VIA_DEVICE)
+        if capabilities == set(self.info.capabilities):
+            return self.info
+        return replace(self.info, capabilities=frozenset(capabilities))
+
+    # ------------------------------------------------------- device wakes
+    def drain_wakes(self) -> list[DeviceWake]:
+        """Return every pending device wake once; synchronous and non-blocking.
+
+        RUI validates score/threshold/staleness itself and owns the turn/barge
+        decision. Vendor assistant wakes stay on drain_signals(); the two
+        channels are never merged (v1 section 4.3).
+        """
+        if self._closed:
+            return []
+        return self._wakes.drain()
+
+    def drain_signals(self) -> list:
+        """Vendor assistant channel: EchoMuse vendor wakes are not our wake.
+
+        Deliberately empty. oww_wake is the device detecting OUR wake word and
+        goes through drain_wakes(); the vendor's own assistant (wake/dialog_end/
+        playing) would use this method, and this plug never pretends to have one.
+        """
+        return []
+
+    def inject_wake(
+        self,
+        *,
+        ts_ms: float | None = None,
+        score: float = 0.9,
+        threshold: float = 0.5,
+        barge: bool = False,
+        level: float | None = None,
+    ) -> None:
+        """Kit-only hook (docs/plug-test-kit.md); not part of DeviceAdapter.
+
+        Production wakes come from the device via oww_wake on the control
+        socket. The contract kit uses this to verify the drain/idle/barge path
+        without a speaker; it must never be exposed to a device or user input.
+        """
+        if not isinstance(barge, bool):
+            # DeviceWake also rejects this, but an explicit error names the hook.
+            raise TypeError(f"inject_wake barge must be a bool (got {barge!r})")
+        self._wakes.push(
+            DeviceWake(
+                ts_ms=time.monotonic() * 1000.0 if ts_ms is None else float(ts_ms),
+                score=float(score),
+                threshold=float(threshold),
+                barge=barge,
+                level=None if level is None else float(level),
+            )
+        )
 
     async def open(self) -> None:
+        self._closed = False
+        self._wakes.clear()
         self._link_kwargs["mic_gain_db"] = self._mic_gain_db
         self._link = DeviceLink(**self._link_kwargs)  # type: ignore[arg-type]
         await self._link.start()
@@ -368,6 +510,10 @@ class Dot2Adapter(DeviceAdapter):
         if self._link is not None:
             await self._link.stop()
             self._link = None
+        # close() must be final: no event from before or after this may be drained
+        # by rui after the device is gone (v1 section 4.2).
+        self._wakes.clear()
+        self._closed = True
 
     def _record(self, pcm: bytes) -> None:
         if not self._record_path:
@@ -568,11 +714,18 @@ class Dot2Adapter(DeviceAdapter):
                 # (2026-10-24 review). Both ride the data socket, in order.
                 await self._link.end_stream()
 
-    async def set_volume(self, volume: int) -> None:
-        """rui's 0-100, capped at the owner's ceiling before it reaches the device."""
+    async def set_volume(self, percent: int) -> None:
+        """High-level volume, 0-100, same unit as config/UI (v1 section 4.1).
+
+        Maps through percent_to_device_volume() into the 0-255 services surface,
+        which then applies the deployment ceiling to the device's own 0-127
+        codec scale. Out-of-range input raises rather than silently clamping.
+        """
+        if isinstance(percent, bool) or not isinstance(percent, int) or not 0 <= percent <= 100:
+            raise ValueError(f"volume percent must be an int in 0..100 (got {percent!r})")
         if self._link is None:
             return
-        await self._link.set_volume_percent(clamp_percent(volume, self.volume_cap_percent))
+        await self.services.set_volume(percent_to_device_volume(percent))
 
     async def set_led(self, effect: str, color: str = "", *, repaint: bool = False) -> None:
         """Paint the 12-LED ring for a rui state. Unknown states go dark, not stale."""
@@ -589,62 +742,245 @@ class Dot2Adapter(DeviceAdapter):
         await self._link.set_leds(_ring(rgb), listening=effect in ("listening", "wake"))
 
 
-def build(dev, cfg) -> Dot2Adapter:  # noqa: ANN001 - rui's DeviceConfig/Config
-    """rui registry entry point: ``register("dot2", "rui_dot2_bridge.adapter:build")``."""
-    import os
+#: Production defaults mirroring plug.json. They are used when the legacy JSON
+#: manifest is not shipped next to the package (the downstream image copies only
+#: src/rui_dot2_bridge, and a quiet 30 % ceiling there was a real deployment bug).
+DEFAULT_VOLUME_CAP_PERCENT = 100.0
+DEFAULT_PREBUFFER_MS = 450
+DEFAULT_PREBUFFER_START_MS = 350
+DEFAULT_EOS_IDLE_MS = 1200
+DEFAULT_MIC_GAIN_DB = 18
 
-    token = None
-    token_env = getattr(dev, "token_env", None)
-    if token_env:
-        token = os.environ.get(token_env) or None
-    mute = os.environ.get("DOT2_MUTE", "").strip().lower() in ("1", "true", "yes", "on")
-    # The plug manifest supplies deployment defaults; env wins over it, and rui's
-    # DeviceConfig wins over both for the fields rui owns (host, port, secrets).
+
+def _params(dev: object | None) -> dict[str, Any]:
+    """DeviceConfig.params, tolerating the contract kit fake device and old configs."""
+    value = getattr(dev, "params", None)
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _text(*values: object) -> str:
+    """First non-empty value as stripped text (empty string when none)."""
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _optional_int(*values: object) -> int | None:
+    """First present value as int; booleans and empty strings are skipped."""
+    for value in values:
+        if value is None or value == "" or isinstance(value, bool):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"expected an integer, got {value!r}") from None
+    return None
+
+
+def _optional_float(*values: object) -> float | None:
+    """First present value as float; booleans and empty strings are skipped."""
+    for value in values:
+        if value is None or value == "" or isinstance(value, bool):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"expected a number, got {value!r}") from None
+    return None
+
+
+def _flag(*values: object) -> bool:
+    """First parsable boolean; an unset/malformed value is False."""
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off"):
+            return False
+    return False
+
+
+def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
+    """rui registry entry: RUI_ADAPTER_PLUGINS=dot2=rui_dot2_bridge.adapter:build.
+
+    Precedence, highest first (v1 sections 4.1 and 4.4):
+
+    1. the operator DeviceConfig (``dev``) for the fields rui owns;
+    2. the plug non-secret ``params`` (host/room/listen_port/token_env/plug_id,
+       oww_model/oww_on_device) - explicitly configured values win over env;
+    3. DOT2_* environment fallbacks, then the legacy plug.json defaults.
+
+    ``cfg`` exists for the builder signature only: rui has already resolved the
+    device fields and ``params.plug_id`` before calling, and this plug needs no
+    global config. Both arguments are optional because the contract kit builds
+    with its fake device/config objects.
+    """
+    env = os.environ
     manifest = plug_manifest.load()
+    params = _params(dev)
+
+    # -- identity and inbound transport ---------------------------------------
+    device_id = _text(getattr(dev, "id", None), params.get("id"), "dot2")
+    host = _text(
+        getattr(dev, "host", None),
+        params.get("host"),
+        env.get("DOT2_HOST"),
+        "127.0.0.1",
+    )
+    room = _text(getattr(dev, "room", None), params.get("room"), env.get("DOT2_ROOM"))
+    listen_port = _optional_int(
+        getattr(dev, "listen_port", None),
+        params.get("listen_port"),
+        params.get("port"),
+        env.get("DOT2_LISTEN_PORT"),
+        env.get("DOT2_TLS_PORT"),
+        plug_manifest.get(manifest, "transport", "port"),
+        DEFAULT_TLS_PORT,
+    )
+    token_env = _text(
+        getattr(dev, "token_env", None),
+        params.get("token_env"),
+        env.get("DOT2_TOKEN_ENV"),
+        DEFAULT_TOKEN_ENV,
+    )
+    plug_id = _text(params.get("plug_id"), env.get("DOT2_PLUG_ID"))
+    secrets_dir = _text(
+        getattr(dev, "secrets_dir", None),
+        params.get("secrets_dir"),
+        env.get("DOT2_SECRETS_DIR"),
+        "secrets",
+    )
+    # The EchoMuse X-EM-Token and rui's own transport admission are separate
+    # secrets, so token_env names the adapter's own variable (manifest default:
+    # DOT2_EM_TOKEN). Env wins; the deployment's secrets dir carries the same
+    # token in <secrets_dir>/device_token (0600) so it need not be duplicated
+    # into .env. Only the source is logged, never the value.
+    token = env.get(token_env, "").strip() or env.get("DOT2_TOKEN", "").strip()
+    token_source = "env" if token else ""
+    if not token:
+        token_file = Path(secrets_dir) / "device_token"
+        try:
+            token = token_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+        if token:
+            token_source = "file"
+    token = token or None
+    if token is None:
+        log.warning(
+            "dot2 adapter: no X-EM-Token in $%s or %s/device_token; "
+            "the admission check is disabled",
+            token_env,
+            secrets_dir,
+        )
+    else:
+        log.info("dot2 adapter: X-EM-Token source: %s", token_source)
+
+    # -- device-side wake (opt-in; stock firmware has no model for our word) --
+    oww_model = _text(params.get("oww_model"), env.get("DOT2_OWW_MODEL"))
+    oww_on_device = _text(
+        params.get("oww_on_device"),
+        env.get("DOT2_OWW_ON_DEVICE"),
+        "on" if oww_model else "off",
+    )
+
+    # -- audio / tuning -------------------------------------------------------
+    mute = _flag(env.get("DOT2_MUTE"))
     aec_manifest = str(plug_manifest.get(manifest, "capabilities", "aec", default="device"))
-    aec_env = os.environ.get("DOT2_AEC_ENABLED", "1" if aec_manifest != "none" else "0").strip().lower()
-    inject = os.environ.get("DOT2_INJECT_PORT", "").strip()
-    mic_channels = int(
-        os.environ.get("DOT2_MIC_CHANNELS")
-        or plug_manifest.get(manifest, "audio", "capture", "mic_channels", default=1)
+    aec_enabled = _flag(env.get("DOT2_AEC_ENABLED"), aec_manifest != "none")
+    mic_channels = _optional_int(
+        params.get("mic_channels"),
+        env.get("DOT2_MIC_CHANNELS"),
+        plug_manifest.get(manifest, "audio", "capture", "mic_channels"),
+        1,
     )
-    ref_channels = int(
-        os.environ.get("DOT2_REF_CHANNELS")
-        or plug_manifest.get(manifest, "audio", "capture", "ref_channels", default=0)
+    ref_channels = _optional_int(
+        params.get("ref_channels"),
+        env.get("DOT2_REF_CHANNELS"),
+        plug_manifest.get(manifest, "audio", "capture", "ref_channels"),
+        0,
     )
-    mic_gain_db = int(
-        os.environ.get("DOT2_MIC_GAIN_DB")
-        or plug_manifest.get(manifest, "audio", "capture", "mic_gain_db", default=18)
+    mic_gain_db = _optional_int(
+        env.get("DOT2_MIC_GAIN_DB"),
+        plug_manifest.get(manifest, "audio", "capture", "mic_gain_db"),
+        DEFAULT_MIC_GAIN_DB,
     )
-    if os.environ.get("DOT2_MIC_GAIN_DB"):
-        os.environ.setdefault("DOT2_MIC_GAIN_DB", str(mic_gain_db))
-    return Dot2Adapter(
-        dev.id,
-        host=dev.host,
-        room=getattr(dev, "room", ""),
-        secrets_dir=(
-            getattr(dev, "secrets_dir", None)
-            or os.environ.get("DOT2_SECRETS_DIR")
-            or "secrets"
-        ),
-        tls_port=int(
-            getattr(dev, "listen_port", None)
-            or plug_manifest.get(manifest, "transport", "port", default=DEFAULT_TLS_PORT)
-        ),
+    cap_percent = _optional_float(
+        params.get("volume_cap_percent"),
+        env.get("DOT2_VOLUME_CAP"),
+        plug_manifest.get(manifest, "volume", "ceiling_percent"),
+        DEFAULT_VOLUME_CAP_PERCENT,
+    )
+    # Mute = the ceiling itself becomes 0, so every path (connect, reconciler,
+    # physical buttons) lands on level 0 and the device stays silent while
+    # wake/ASR/barge keep working. Flip DOT2_MUTE off and restart to unmute.
+    volume_cap_percent = 0.0 if mute else float(cap_percent or 0.0)
+    prebuffer_ms = _optional_int(
+        env.get("DOT2_PREBUFFER_MS"),
+        params.get("prebuffer_ms"),
+        plug_manifest.get(manifest, "audio", "playback", "prebuffer_ms"),
+        DEFAULT_PREBUFFER_MS,
+    )
+    prebuffer_start_ms = _optional_int(
+        env.get("DOT2_PREBUFFER_START_MS"),
+        params.get("prebuffer_start_ms"),
+        plug_manifest.get(manifest, "audio", "playback", "prebuffer_start_ms"),
+        DEFAULT_PREBUFFER_START_MS,
+    )
+    eos_idle_ms = _optional_int(
+        env.get("DOT2_EOS_IDLE_MS"),
+        params.get("eos_idle_ms"),
+        plug_manifest.get(manifest, "audio", "playback", "eos_idle_ms"),
+        DEFAULT_EOS_IDLE_MS,
+    )
+    inject_port = _optional_int(env.get("DOT2_INJECT_PORT"))
+    loudness = manifest.get("loudness")
+
+    if plug_id or oww_model:
+        log.info(
+            "dot2 adapter: plug_id=%s oww_model=%s oww_on_device=%s",
+            plug_id or "-",
+            oww_model or "-",
+            oww_on_device,
+        )
+
+    adapter = Dot2Adapter(
+        device_id,
+        host=host,
+        room=room,
+        secrets_dir=secrets_dir,
+        tls_port=int(listen_port or DEFAULT_TLS_PORT),
         token=token,
-        # Mute = the ceiling itself becomes 0, so every path (connect, reconciler,
-        # physical buttons) lands on level 0 and the device stays silent while
-        # wake/ASR/barge keep working. Flip DOT2_MUTE off and restart to unmute.
-        volume_cap_percent=0.0 if mute else float(
-            os.environ.get("DOT2_VOLUME_CAP")
-            or plug_manifest.get(manifest, "volume", "ceiling_percent", default=VOLUME_CAP_PERCENT)
-        ),
-        aec_enabled=aec_env not in ("0", "false", "no", "off"),
-        inject_port=int(inject) if inject else None,
-        mic_channels=mic_channels,
-        ref_channels=ref_channels,
-        prebuffer_ms=plug_manifest.get(manifest, "audio", "playback", "prebuffer_ms"),
-        prebuffer_start_ms=plug_manifest.get(manifest, "audio", "playback", "prebuffer_start_ms"),
-        eos_idle_ms=plug_manifest.get(manifest, "audio", "playback", "eos_idle_ms"),
-        loudness_defaults=manifest.get("loudness") if isinstance(manifest.get("loudness"), dict) else None,
+        volume_cap_percent=volume_cap_percent,
+        aec_enabled=aec_enabled,
+        oww_on_device=oww_on_device,
+        oww_model=oww_model,
+        plug_id=plug_id,
+        inject_port=inject_port,
+        mic_channels=int(mic_channels or 1),
+        ref_channels=int(ref_channels or 0),
+        mic_gain_db=mic_gain_db,
+        prebuffer_ms=prebuffer_ms,
+        prebuffer_start_ms=prebuffer_start_ms,
+        eos_idle_ms=eos_idle_ms,
+        loudness_defaults=loudness if isinstance(loudness, dict) else None,
     )
+    # Kit-only hints (not part of DeviceAdapter, ignored by the audio plane): this
+    # is an inbound transport, so open() only starts listening and capture/playback
+    # exist once the real EchoMuse client dials in. Without this the host-free kit
+    # would fail on missing TLS material instead of recording an honest SKIP.
+    adapter.kit_live_device_required = True  # type: ignore[attr-defined]
+    adapter.kit_live_device_reason = (  # type: ignore[attr-defined]
+        "inbound EchoMuse transport: open() listens for the Dot 2 on wss:8870 and "
+        "capture/playback need the real client (and its TLS material) to dial in; "
+        "probe(), the method surface and both drains were still exercised"
+    )
+    return adapter

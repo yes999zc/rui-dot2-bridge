@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from rui.device.contract import Capability
+
 from rui_dot2_bridge.adapter import Dot2Adapter
 from rui_dot2_bridge.frames import SPEAKER_CHUNK_BYTES
 from rui_dot2_bridge.volume import capped_level
@@ -26,6 +28,8 @@ class FakeStats:
     rtt_ms = 5.0
     mic_frames = 0
     dropped_audio = 0
+    wake_events = 0
+    invalid_wakes = 0
 
 
 class FakeLink:
@@ -45,6 +49,8 @@ class FakeLink:
         self.reported_level = 38
         self.volume_cap_percent = 30.0
         self.aec_enabled = True
+        # Live-link proof of on-device wake scoring; probe() gates on this.
+        self.device_wake_available = False
 
     async def frames(self):
         for block in self.blocks:
@@ -108,8 +114,6 @@ class CaptureLayoutTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frames[0].mic_channels, 1)
 
     async def test_capabilities_stay_honest(self) -> None:
-        from house_ear.device.contract import Capability
-
         mono = make_adapter()
         self.assertNotIn(Capability.REFERENCE, mono.info.capabilities)
         self.assertNotIn(Capability.MIC_ARRAY, mono.info.capabilities)
@@ -281,6 +285,82 @@ class VolumeMappingTest(unittest.TestCase):
     def test_cap(self) -> None:
         self.assertEqual(capped_level(100), 38)
         self.assertEqual(capped_level(0), 0)
+
+
+class WakeContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_drain_wakes_returns_an_injected_event_once(self) -> None:
+        adapter = make_adapter()
+        adapter.inject_wake(ts_ms=1234.0, score=0.9, threshold=0.5, level=-30.0)
+        events = adapter.drain_wakes()
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event.ts_ms, 1234.0)
+        self.assertAlmostEqual(event.score, 0.9)
+        self.assertEqual(event.source, "device")
+        self.assertIs(event.barge, False)
+        self.assertEqual(adapter.drain_wakes(), [])
+
+    async def test_queue_is_bounded_and_drops_the_oldest(self) -> None:
+        adapter = make_adapter()
+        for index in range(40):
+            adapter.inject_wake(ts_ms=float(index))
+        self.assertEqual(len(adapter._wakes), 32)
+        self.assertEqual(adapter._wakes.dropped, 8)
+        events = adapter.drain_wakes()
+        self.assertEqual(len(events), 32)
+        self.assertEqual(events[0].ts_ms, 8.0)  # the eight oldest were dropped
+        self.assertEqual(events[-1].ts_ms, 39.0)
+
+    async def test_invalid_barge_type_is_rejected(self) -> None:
+        adapter = make_adapter()
+        with self.assertRaises(TypeError):
+            adapter.inject_wake(barge="false")  # type: ignore[arg-type]
+
+    async def test_probe_only_advertises_device_wake_with_live_proof(self) -> None:
+        adapter = make_adapter(oww_on_device="on", oww_model="hey_rui.onnx")
+        self.assertNotIn(Capability.DEVICE_WAKE, (await adapter.probe()).capabilities)
+        adapter._link.device_wake_available = True
+        info = await adapter.probe()
+        self.assertIn(Capability.DEVICE_WAKE, info.capabilities)
+        self.assertIn(Capability.BARGE_VIA_DEVICE, info.capabilities)
+
+    async def test_drain_signals_stays_empty_and_separate(self) -> None:
+        adapter = make_adapter()
+        adapter.inject_wake()
+        self.assertEqual(adapter.drain_signals(), [])
+        self.assertEqual(len(adapter.drain_wakes()), 1)
+
+    async def test_close_stops_returning_wakes(self) -> None:
+        adapter = make_adapter()
+        adapter.inject_wake()
+        await adapter.close()
+        self.assertEqual(adapter.drain_wakes(), [])
+        adapter.inject_wake()
+        self.assertEqual(adapter.drain_wakes(), [])
+
+
+class VolumeUnitsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_services_reject_out_of_range_instead_of_clamping(self) -> None:
+        adapter = make_adapter()
+        for value in (-1, 256, True, 1.5):
+            with self.assertRaises(ValueError):
+                await adapter.services.set_volume(value)  # type: ignore[arg-type]
+
+    async def test_high_level_set_volume_rejects_out_of_range(self) -> None:
+        adapter = make_adapter()
+        for value in (-1, 101, True):
+            with self.assertRaises(ValueError):
+                await adapter.set_volume(value)  # type: ignore[arg-type]
+
+    async def test_services_255_maps_to_the_full_high_level_range(self) -> None:
+        adapter = make_adapter(volume_cap_percent=100)
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        await adapter.services.set_volume(255)
+        self.assertEqual(link.volumes[-1], 100.0)
+        await adapter.services.set_volume(0)
+        self.assertEqual(link.volumes[-1], 0.0)
+        await adapter.set_volume(50)
+        self.assertEqual(link.volumes[-1], 50.0)
 
 
 if __name__ == "__main__":
