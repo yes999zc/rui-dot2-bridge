@@ -41,7 +41,7 @@ from rui.device.contract import (
 from . import plug as plug_manifest
 from .control import start_control_server
 from .device_link import DeviceLink
-from .dsp import LoudnessConfig, LoudnessProcessor, fade_out_pcm
+from .dsp import LoudnessConfig, LoudnessProcessor, fade_in_pcm, fade_out_pcm
 from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE
 from .volume import DEVICE_LEVEL_MAX, VOLUME_CAP_PERCENT, clamp_percent
 
@@ -115,6 +115,12 @@ PLAYBACK_LIVE_S = 0.35
 
 EOS_IDLE_S = 1.2
 PLAY_CHUNK_MS = 20        # re-chunk the device's 80 ms blocks for the plane
+#: A tail shorter than this is dropped at EOS instead of being played late.
+#: EOS fires one EOS_IDLE after the last full period, so the fragment would land
+#: 1.2 s after the reply: the device opens a one-period stream and its onset is
+#: an audible click (heard after the 490 ms "在呢" cue: 11 periods + 20.7 ms).
+#: Under 30 ms nothing intelligible is lost; a longer tail is faded in and out.
+EOS_TAIL_DROP_MS = 30.0
 
 #: Default env var holding the EchoMuse X-EM-Token (inner auth). It must NOT be
 #: rui's own transport token (RUI_DEVICE_TOKEN is a different secret); rui's
@@ -705,19 +711,20 @@ class Dot2Adapter(DeviceAdapter):
             return
         self._playing = False
         self._stream_started = False
-        if len(self._frame_buffer) < int(SPEAKER_RATE * 2 * 0.005):
-            # A sub-5 ms remainder after the last whole period would open a 1-period
-            # stream at EOS (the "ghost" stream that pollutes primeWait/recvSpan).
-            # It is inaudible; drop it rather than play it late.
+        drop_bytes = int(SPEAKER_RATE * 2 * EOS_TAIL_DROP_MS / 1000.0)
+        if len(self._frame_buffer) < drop_bytes:
+            # A short remainder after the last whole period would open a 1-period
+            # stream one EOS_IDLE later: the "ghost" stream that pollutes
+            # primeWait/recvSpan and is heard as a click at its onset (the 20.7 ms
+            # tail of the 490 ms "在呢" cue, 2026-10-25). Dropping it is inaudible.
             self._frame_buffer.clear()
             await self._link.end_stream()
             return
         if self._frame_buffer:
-            # Fade the last ~10 ms of the partial tail, then pad with silence so the
-            # device gets whole 42.7 ms periods. Holding the tail back (instead of
-            # sending it) was tried and reverted: EOS fires 1.2 s after the last
-            # chunk, so the held fragment would play after a 1.2 s hole.
-            tail = fade_out_pcm(bytes(self._frame_buffer))
+            # A longer tail is still owed to the listener, but it plays one EOS_IDLE
+            # late: fade BOTH edges and pad to a whole 42.7 ms period so the device
+            # gets a clean period instead of a hard onset out of silence.
+            tail = fade_in_pcm(fade_out_pcm(bytes(self._frame_buffer)))
             if len(tail) < SPEAKER_CHUNK_BYTES:
                 tail += bytes(SPEAKER_CHUNK_BYTES - len(tail))
             self._frame_buffer.clear()

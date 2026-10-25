@@ -140,13 +140,25 @@ class PlaybackTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.adapter.play(bytes(100), sample_rate=48000, channels=2)
 
-    async def test_idle_sends_padded_tail_and_eos(self) -> None:
+    async def test_idle_drops_a_short_tail_instead_of_playing_it_late(self) -> None:
+        # 5000 B = one 4096 B period + 904 B (10.6 ms) tail. EOS owns one idle
+        # later, so that tail would be an onset click ("在呢", 2026-10-25).
         await self.adapter.play(bytes(5000), sample_rate=48000, channels=1)
         await asyncio.sleep(1.5)  # EOS_IDLE_S is 1.2
         self.assertEqual(self.link.eos, 1)
+        self.assertEqual(len(self.link.sent), 1)  # no ghost one-period stream
+
+    async def test_idle_fades_a_long_tail_and_pads_it(self) -> None:
+        # 4096 + 3000 B (31.25 ms) is longer than the drop threshold: it is owed
+        # to the listener and must go out padded to a whole period, faded on both
+        # edges so the late onset is not a click.
+        await self.adapter.play(bytes(4096 + 3000), sample_rate=48000, channels=1)
+        await asyncio.sleep(1.5)
+        self.assertEqual(self.link.eos, 1)
         self.assertEqual(len(self.link.sent), 2)
-        self.assertEqual(len(self.link.sent[-1]), SPEAKER_CHUNK_BYTES)  # tail padded
-        self.assertEqual(self.link.sent[-1][-2:], b"\x00\x00")  # faded to silence
+        self.assertEqual(len(self.link.sent[-1]), SPEAKER_CHUNK_BYTES)  # padded
+        self.assertEqual(self.link.sent[-1][:2], b"\x00\x00")  # faded in
+        self.assertEqual(self.link.sent[-1][-2:], b"\x00\x00")  # faded out
 
     async def test_stop_playback_when_idle_still_flushes(self) -> None:
         # The flush must go out even when idle: it opens the device's 1.024 s prime

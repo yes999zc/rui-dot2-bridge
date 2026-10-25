@@ -79,6 +79,21 @@ class LoudnessConfig:
         return LoudnessConfig.from_json(data)
 
 
+def fade_in_pcm(pcm: bytes, rate: int = 48000, ms: float = 10.0) -> bytes:
+    """Linear ramp from zero on the first ``ms`` of a PCM block.
+
+    Used on a late tail fragment: the fragment is sent one EOS-idle after the
+    last whole period, so its first sample lands on a silent wire and a hard
+    onset is heard as a click (the 20 ms tail of the 490 ms "在呢" cue,
+    2026-10-25). A short ramp turns that into an inaudible swell.
+    """
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
+    ramp = min(len(samples), max(1, int(rate * ms / 1000.0)))
+    if ramp >= 2:
+        samples[:ramp] *= np.linspace(0.0, 1.0, ramp)
+    return samples.astype("<i2").tobytes()
+
+
 def fade_out_pcm(pcm: bytes, rate: int = 48000, ms: float = 10.0) -> bytes:
     """Linear ramp to zero on the last ``ms`` of a PCM block (click-free stop).
 
