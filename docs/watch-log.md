@@ -46,6 +46,9 @@
 | 2026-10-25 15:20 | 新建 [rui#11](https://github.com/yes999zc/rui/issues/11)：**多设备/多卫星仲裁契约提案**（进程模型、来源分层不跨来源比 score、同房间交叉回声抑制、barge 归属正在播放设备、仲裁 trace/metrics 字段、Q1–Q7 待 rui 决定）。短期我们接受"一设备一实例"，不催进度 |
 | 2026-10-25 15:27 | 扫描确认 **v0.4.2 已发布且可拉**：tag `v0.4.2`（`3c4af3e`），ghcr `0.4.2`=`0.4`，digest `sha256:3791ccfd…`（amd64+arm64）；#7 两条新评论（07:27Z 公布 digest + 4 项检查清单；07:42Z 多设备仲裁冻结补充），#11 已答复 Q1–Q7（0.5 单实例多 plane，不需要 adapter 改字段） |
 | 2026-10-25 16:05 | **0.4.2 受控切换完成**（.34）：清空旧镜像 → 新用户视角 agent 装 vanilla 0.4.2 → Lead 加 adapter 层 → `rui-dot2:0.4.2` healthy；`plug-test` 15/0/2/5 与基线一致；`/devices/dot2/status` 显示 8870 / `DOT2_EM_TOKEN`；**撤门控后自听复现**，已恢复 `DOT2_PLAYBACK_GATE_MS=2500`；回滚演练 0.4.2↔0.3.4 双向通过。真人段按 9 哥要求暂缓 |
+| 2026-10-25 16:16 | rui 回复 #7 / #12：① 门控走 **B 路线**（上游新增 `devices[].audio.voice.post_playback_mute_ms`，默认 0，落地前继续保留 adapter 门控）；② token 显示 bug 进打磨批（短期按"status 只认 env/secrets store"写文档）；③ 音量百分数换算欢迎 docs PR；④ 冷启动反馈 C2/C3/C4/K1 与 C1/C5 文档项接受（欢迎 docs PR），干净主机冷装他们暂不排 |
+| 2026-10-25 16:21 | rui #11 Phase 2 草案 v0.1：**对 adapter/manifest 无接口改动**（六字段不变、多平面在 rui 内部、`rui_compat` 待 0.5 发布时更新兼容矩阵）；部署侧仅 `devices[].room`（多设备启用时必填）与 `post_playback_mute_ms` 两个字段 |
+| 2026-10-25 16:40 | 9 哥定：测试暂停（新会话统一调度，另有 1×LX06 + 4–5×Dot2 待部署）；**盯 rui v0.5.0 对外发布版**，每 30 min 扫描；发布后在 .34 做完全干净安装（安装专用 agent → Lead 填配置），安装问题单独开 issue。设备端唤醒路线 B 的资产/打分器已真机验证、adapter 改动已提交，`.34` 已恢复到稳定 `rui-dot2:0.4.2` |
 
 ### 2026-10-25 15:27 — v0.4.2 发布（tag + digest + 4 项清单），多设备仲裁冻结
 
@@ -70,3 +73,19 @@
 - 回滚演练：0.4.2→0.3.4 21 s、0.3.4→0.4.2 11 s，设备均自动重连。
 - 真人段按 9 哥要求暂缓；非人工回合用官方 `/api/v1/debug/say` 验证播放链路。
 - 待办：向 rui 开 cold-start 反馈 issue + #7 回帖；补真人段；OVW 决策；token 显示口径。
+
+### 2026-10-25 16:16–16:21 — rui 对 0.4.2 反馈的结论 + Phase 2 草案 v0.1
+
+- **#7**：接受"撤门控不成立"的结论，选 **B 路线**：新增 `devices[].audio.voice.post_playback_mute_ms`（每设备覆盖，默认 0；
+  输出 owner 停播后 N ms 内丢弃麦克风、播放中 barge 不受影响；`≥ followup_delay_ms` 时跳过 follow-up gate；
+  落地在 Phase 2 多平面，0.5 之前不要求我们改）→ **在字段可用前继续保留 adapter 门控**（我们现状）。
+  token 口径短期选③（文档写清 status 只认 env / rui secrets store），并修复"已连接却 ready=false"的显示 bug（进打磨批）；
+  音量百分数→指数型 codec 律的换算欢迎 docs PR。
+- **#12**：接受 C2（install.sh 打印已有 RUI_IMAGE）、C3/C4（healthcheck 根因/doctor 一致性）、K1（release notes 占位注释）；
+  接受 C1/C5 文档项（`docs/deploy.md` 新增 out-of-tree adapter 升级一节 + 兼容矩阵）；**docs PR 欢迎**（只动 docs）。
+  他们暂不排干净主机冷装（做完仲裁后自己做发布前验收）。
+- **#11 Phase 2 草案 v0.1**：`drain_wakes()`/`DeviceWake` 六字段不变、多平面在 rui 内部、**不需改 adapter**；
+  部署侧两条：`multi_device.enabled=true` 时 `devices[].room` 必填；新增 `post_playback_mute_ms`。
+  trace/metrics 会加仲裁字段（可选用于验收）。
+- **我们的动作**：a) `.34` 恢复稳定 0.4.2、设备端 OWW 关闭；b) 未来 0.5.0 出现后做干净安装（docs/clean-install-0.5.0.md）；
+  c) 0.5.0 前对齐 `rui_compat` 上界（当前 `<0.5.0` 会拒 0.5.0）；d) docs PR（C1/C5 + 音量换算）待 0.5 前提交。

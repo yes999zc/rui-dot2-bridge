@@ -10,7 +10,7 @@
 **不改 rui 源码**，用 out-of-tree adapter/plug（`RUI_ADAPTER_PLUGINS` + `rui-device/v1` manifest）；
 AEC 归设备（`ref_channels=0`）；部署一律 Docker。
 
-## 当前状态（2026-10-25 16:10）
+## 当前状态（2026-10-25 16:42）
 
 - 测试机 **.34** 跑 `rui-dot2:0.4.2`（官方 0.4.2 + 内置 dot2 bridge，manifest 1.1.1），`healthy`；
   Dot 2 在线：`devices=1, enabled=1, audio_plane=true, speaker_connected=true, device_errors=0,
@@ -37,9 +37,7 @@ AEC 归设备（`ref_channels=0`）；部署一律 Docker。
 
 ## 下一步（按序）
 
-1. **回写 GitHub**：cold-start 卡点单独开 issue（反馈从 `docs/deploy-0.4.2-user-report.md` 提炼）；
-   #7 回帖（0.4.2 清单逐项、门控实测、token 显示口径、healthcheck 提示、回滚数据）；
-    #11 只做"已知悉、不改 adapter 字段"的 ack（如需）。
+1. **盯 v0.5.0**（已设 30 分钟定时扫描）：tag + ghcr digest 一出现，立即通知 9 哥并按 `docs/clean-install-0.5.0.md` 执行干净安装。
 2. ~~真人段补测~~（已关闭：9 哥确认历史已验证，0.4.2 不重复）。
 3. `ready=false / token_missing` 三选一修法（启动注入 `DOT2_EM_TOKEN` / manifest 回默认 `RUI_DEVICE_TOKEN` / 上游支持文件来源）。
 4. ~~音量偏小~~（已修复：`devices[].volume` 60→100，9 哥确认可以）。

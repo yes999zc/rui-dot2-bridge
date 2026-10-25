@@ -236,6 +236,106 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
             self.assertTrue(self.link.device_wake_available)
 
+    async def test_streaming_scoring_evidence_upgrades_device_wake(self) -> None:
+        """Streaming firmware keeps listen_state=stream; a real oww_wake is proof.
+
+        The device only emits oww_wake when it ran the ONNX scorer and crossed the
+        threshold, so after one valid event the plug may advertise device_wake even
+        though the microphone never left the controller's stream.
+        """
+        self.link.oww_on_device = "on"
+        async with self._control(
+            capabilities=["mic", "speaker", "oww_local_only", "oww_trigger"]
+        ) as ctl:
+            await self._handshake(ctl)
+            await ctl.send(json.dumps({"type": "listen_state", "state": "stream"}))
+            await asyncio.sleep(0.05)
+            self.assertFalse(self.link.device_wake_available)
+            await ctl.send(
+                json.dumps({"type": "oww_wake", "score": 0.94, "threshold": 0.5})
+            )
+            await asyncio.sleep(0.05)
+            self.assertTrue(self.link.scoring_evidence)
+            self.assertTrue(self.link.device_wake_available)
+            self.assertEqual(len(self.link.drain_wakes()), 1)
+
+    async def test_shadow_crossing_proves_scoring_without_a_wake(self) -> None:
+        """A shadow crossing is evidence, never a DeviceWake."""
+        self.link.oww_on_device = "on"
+        async with self._control(
+            capabilities=["mic", "speaker", "oww_shadow", "oww_trigger"]
+        ) as ctl:
+            await self._handshake(ctl)
+            await ctl.send(
+                json.dumps({"type": "oww_shadow_cross", "score": 0.71, "ageMs": 90})
+            )
+            await asyncio.sleep(0.05)
+            self.assertEqual(self.link.stats.shadow_crossings, 1)
+            self.assertEqual(self.link.stats.wake_events, 0)
+            self.assertTrue(self.link.scoring_evidence)
+            self.assertEqual(self.link.drain_wakes(), [])
+
+    async def test_oww_model_and_threshold_are_pushed_in_config(self) -> None:
+        link = DeviceLink(
+            tls_port=None,
+            plain_port=0,
+            oww_on_device="on",
+            oww_model="hey_jarvis_v0.1",
+            oww_threshold=0.6,
+        )
+        await link.start()
+        port = link.bound_ports["plain"]
+        self.addCleanup(link.stop)
+        async with ws_client.connect(f"ws://127.0.0.1:{port}/control") as ws:
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "register",
+                        "device_id": "D090",
+                        "version": "v2.19.0",
+                        "capabilities": ["mic", "speaker", "oww_trigger"],
+                    }
+                )
+            )
+            messages = [json.loads(await asyncio.wait_for(ws.recv(), 2)) for _ in range(4)]
+        config = next(m for m in messages if m["type"] == "config")
+        self.assertEqual(config["owwModel"], "hey_jarvis_v0.1")
+        self.assertAlmostEqual(config["owwThreshold"], 0.6)
+        self.assertEqual(config["owwOnDevice"], "on")
+        self.assertIs(config["wakeWordEnabled"], True)
+
+    async def test_wake_during_playback_becomes_a_barge(self) -> None:
+        """Stream-mode firmware has no barge bit; our playback state supplies it."""
+        link = DeviceLink(
+            tls_port=None,
+            plain_port=0,
+            oww_on_device="on",
+            playing=lambda: True,
+        )
+        await link.start()
+        port = link.bound_ports["plain"]
+        self.addCleanup(link.stop)
+        async with ws_client.connect(f"ws://127.0.0.1:{port}/control") as ws:
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "register",
+                        "device_id": "D090",
+                        "version": "v2.19.0",
+                        "capabilities": ["mic", "speaker", "oww_trigger"],
+                    }
+                )
+            )
+            for _ in range(4):
+                await asyncio.wait_for(ws.recv(), 2)
+            await ws.send(
+                json.dumps({"type": "oww_wake", "score": 0.9, "threshold": 0.5})
+            )
+            await asyncio.sleep(0.05)
+            events = link.drain_wakes()
+        self.assertEqual(len(events), 1)
+        self.assertIs(events[0].barge, True)
+
 
 class AdapterWakePathTest(unittest.IsolatedAsyncioTestCase):
     """The real path: link producer -> adapter queue -> rui DeviceWake."""

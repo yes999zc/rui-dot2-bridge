@@ -24,7 +24,7 @@ import ssl
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +64,7 @@ class LinkStats:
     last_mic_at: float = 0.0
     wake_events: int = 0
     invalid_wakes: int = 0
+    shadow_crossings: int = 0
 
 
 @dataclass
@@ -103,6 +104,9 @@ class DeviceLink:
         wake_mic: int | None = None,
         aec_ref_source: str | None = None,
         oww_on_device: str | None = "off",
+        oww_model: str | None = None,
+        oww_threshold: float | None = None,
+        playing: Callable[[], bool] | None = None,
         wake_queue: BoundedWakeQueue | None = None,
         wake_word_enabled: bool | None = None,
         on_button: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
@@ -137,6 +141,17 @@ class DeviceLink:
         self.wake_mic = wake_mic
         self.aec_ref_source = aec_ref_source
         self.oww_on_device = oww_on_device
+        # Which OWW classifier the device should score with, and the bar it must
+        # clear. The firmware defaults to hey_jarvis_v0.1 / 0.5 when the push omits
+        # them, but the deployment that installed a model has to name it here: the
+        # device only opens the scorer for the model in this config.
+        self.oww_model = str(oww_model or "").strip()
+        self.oww_threshold = oww_threshold
+        # The adapter owns playback state, the link does not; a device-detected wake
+        # that lands while our own reply is playing is a barge-in by definition (the
+        # stream-mode firmware cannot flag it - it only sets `barge` inside a private
+        # listen session, which needs a controller that implements sessions).
+        self.playing = playing
         # One bounded, thread-safe queue per device: the control socket is the
         # producer and rui's audio plane is the single drainer (v1 section 4.2).
         # An adapter may pass its own queue so wake injection works before open().
@@ -149,6 +164,11 @@ class DeviceLink:
             else self.oww_on_device == "on"
         )
         self._listen_state = ""
+        # True once the device has proved it actually scored (oww_wake, or an
+        # oww_shadow_cross). This is the second honest proof of on-device wake,
+        # for the streaming firmware path where listen_state stays "stream"
+        # because the controller does not implement private-listen sessions.
+        self._scoring_evidence = False
         self.on_button = on_button
 
         self.stats = LinkStats()
@@ -297,6 +317,10 @@ class DeviceLink:
         self.device_id = self.device_id or self.info.device_id
         self._control = conn
         self.stats.control_connects += 1
+        # A reconnect can land on a device whose config changed under us: the
+        # listen state and the proof that it can score belong to that connection.
+        self._listen_state = ""
+        self._scoring_evidence = False
 
         await self._send_control(
             {
@@ -325,6 +349,12 @@ class DeviceLink:
                     "startupVolume": self._volume_level,
                     **({"owwOnDevice": self.oww_on_device}
                        if self.oww_on_device is not None else {}),
+                    # The device opens the scorer for this model; omitting it leaves
+                    # the firmware default (hey_jarvis_v0.1), which is only correct
+                    # by accident. The threshold is the bar a score must clear.
+                    **({"owwModel": self.oww_model} if self.oww_model else {}),
+                    **({"owwThreshold": float(self.oww_threshold)}
+                       if self.oww_threshold is not None else {}),
                     "wakeWordEnabled": self.wake_word_enabled,
                     "aecEnabled": self.aec_enabled,
                     **({"micGainDb": self.mic_gain_db} if self.mic_gain_db is not None else {}),
@@ -394,8 +424,26 @@ class DeviceLink:
             log.info("dot2 link: listen_state=%s", self._listen_state or "?")
         elif kind == "oww_wake":
             self._on_oww_wake(message)
+        elif kind == "oww_shadow_cross":
+            self._on_oww_shadow_cross(message)
         else:
             log.debug("dot2 link: control %s", kind)
+
+    def _on_oww_shadow_cross(self, message: dict[str, Any]) -> None:
+        """Record a shadow crossing: proof the device scored, but never a wake.
+
+        Shadow mode is the firmware scoring our stream without acting on it. It is
+        not a DeviceWake (nothing crossed the configured bar for a turn) and must
+        never enter the queue, but it is the same evidence that the runtime and the
+        model are loaded and running on the device.
+        """
+        self.stats.shadow_crossings += 1
+        self._scoring_evidence = True
+        log.debug(
+            "dot2 link: oww_shadow_cross score=%.3f ageMs=%s (scoring proved)",
+            float(message.get("score") or 0.0),
+            message.get("ageMs"),
+        )
 
     def _on_oww_wake(self, message: dict[str, Any]) -> None:
         """Queue one device-detected wake; an invalid report is counted, not raised."""
@@ -405,6 +453,21 @@ class DeviceLink:
             log.warning("dot2 link: ignored oww_wake (%s)", reason)
             return
         self.stats.wake_events += 1
+        # A valid oww_wake is the device stating it scored with the model and
+        # crossed the threshold: proof of on-device wake even when the firmware
+        # keeps streaming (listen_state stays "stream" without listen_session).
+        self._scoring_evidence = True
+        if not event.barge and self.playing is not None and self.playing():
+            # Stream-mode firmware cannot flag barge (it only does inside a private
+            # listen session); the adapter knows whether its own playback was live,
+            # and a wake during a reply is exactly the interruption rui must handle.
+            event = replace(event, barge=True)
+            log.info(
+                "dot2 link: oww_wake during playback treated as barge-in "
+                "(score %.2f, level %s)",
+                event.score,
+                event.level,
+            )
         self.wakes.push(event)
         if event.barge:
             log.info(
@@ -422,19 +485,33 @@ class DeviceLink:
         return self.wakes.drain()
 
     @property
+    def scoring_evidence(self) -> bool:
+        """Whether the device has proved it really scores (wake or shadow crossing)."""
+        return self._scoring_evidence
+
+    @property
     def device_wake_available(self) -> bool:
         """Whether the live link proves on-device scoring of OUR wake word.
 
-        The EchoMuse firmware advertises feature "oww_local_only" when its local
-        scoring path exists and reports listen_state="local" once that scorer owns
-        the microphone. Both must be present, and the controller must have opted in
-        by pushing owwOnDevice=on. Advertising device_wake optimistically would be a
-        contract violation, so anything less than this is a false.
+        Two honest proofs, both requiring the controller to have opted in
+        (``owwOnDevice=on``) and the firmware to advertise a local-scoring feature:
+
+        * ``listen_state="local"`` - the scorer owns the microphone (private
+          listening; needs a controller that implements listen sessions);
+        * a valid ``oww_wake`` or an ``oww_shadow_cross`` - the device actually ran
+          the ONNX scorer on our stream and produced a decision. This is the path
+          for streaming firmware: the model runs on the device, the mic keeps
+          streaming to rui, and the crossing is the wake.
+
+        Advertising device_wake optimistically would be a contract violation, so
+        anything less than one of these is a false.
         """
         if self.oww_on_device != "on":
             return False
         capabilities = {str(capability).lower() for capability in self.info.capabilities}
-        return "oww_local_only" in capabilities and self._listen_state == "local"
+        if not (capabilities & {"oww_local_only", "oww_trigger", "oww_shadow"}):
+            return False
+        return self._listen_state == "local" or self._scoring_evidence
 
     async def _ping_loop(self) -> None:
         while True:

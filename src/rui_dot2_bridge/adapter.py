@@ -195,6 +195,13 @@ class Dot2Adapter(DeviceAdapter):
         self.oww_on_device = (oww_on_device or "off").strip().lower()
         self.oww_model = str(oww_model or "").strip()
         self._push_oww = bool(self.oww_model)
+        # The bar a device-side score must clear. None keeps the firmware default
+        # (0.5); a deployment that installed a model may tune it.
+        _oww_thr = os.environ.get("DOT2_OWW_THRESHOLD", "").strip()
+        try:
+            self.oww_threshold = float(_oww_thr) if _oww_thr else None
+        except ValueError:
+            self.oww_threshold = None
         self.plug_id = str(plug_id or "").strip()
         # Bounded, thread-safe queue for device wakes (v1 section 4.2). The
         # control socket produces; rui's audio plane drains via drain_wakes().
@@ -219,6 +226,12 @@ class Dot2Adapter(DeviceAdapter):
             "wake_mic": self._wake_mic,
             "aec_ref_source": self._aec_ref_source,
             "oww_on_device": self.oww_on_device if self._push_oww else None,
+            "oww_model": self.oww_model if self._push_oww else None,
+            "oww_threshold": self.oww_threshold,
+            # A stream-mode device cannot flag barge (only a private listen session
+            # carries that bit), so the link asks us: our own playback state is the
+            # thing that makes a wake an interruption rather than a fresh turn.
+            "playing": lambda: self._playing,
             "wake_queue": self._wakes,
             "wake_word_enabled": self.oww_on_device == "on",
         }
@@ -396,7 +409,10 @@ class Dot2Adapter(DeviceAdapter):
             "device_wake": {
                 "oww_on_device": self.oww_on_device,
                 "oww_model": self.oww_model,
+                "oww_threshold": self.oww_threshold,
                 "available": link.device_wake_available,
+                "scoring_evidence": bool(getattr(link, "scoring_evidence", False)),
+                "shadow_crossings": int(getattr(link.stats, "shadow_crossings", 0)),
                 "pending": len(self._wakes),
                 "dropped": self._wakes.dropped,
                 "events": link.stats.wake_events,
@@ -417,10 +433,13 @@ class Dot2Adapter(DeviceAdapter):
         """Report the live capabilities; device_wake needs proof, not intent.
 
         The manifest declares what the plug enables; probe() reports what the
-        connected device actually proved. DEVICE_WAKE/BARGE_VIA_DEVICE are only
-        added when DeviceLink saw both the oww_local_only feature and
-        listen_state=local, which is the only evidence that on-device scoring of
-        our wake word exists. Otherwise RUI stays on its own KWS path by design.
+        connected device actually proved. DEVICE_WAKE/BARGE_VIA_DEVICE are added
+        only when DeviceLink saw evidence of on-device scoring: either
+        ``listen_state="local"`` (the scorer owns the mic - needs listen sessions)
+        or a real ``oww_wake`` / ``oww_shadow_cross`` (the device ran the ONNX
+        scorer on our stream). In the streaming path the microphone stays with
+        rui, so the device-detected crossing is the wake and the stream is the
+        turn audio. Otherwise RUI stays on its own KWS path by design.
         """
         capabilities = set(self.info.capabilities)
         link = self._link
