@@ -7,6 +7,7 @@
 | 2026-10-25 10:56 | 建立。基线：rui 最新 tag **v0.4.0**（02:01Z），ghcr 最新镜像仍 **0.3.4**——0.4.0 的 docker-publish 失败，镜像未发布；#3/#7 各 3 条评论（最后一条是我方 10:31 的回报）；两个仓库均无他人 PR/issue |
 | 2026-10-25 11:03 | **v0.4.0 镜像已发布**：ghcr 新增 `0.4`/`0.4.0`/`sha-9f13a0f`（digest `sha256:c4cd1a61…`，03:01:39Z），匿名可拉；#3/#7 仍 3 条评论、无新回复；我们仓库出现 #1 issue + #1 PR（compat 门禁，本队另一 session 创建，标注勿自行合并）；**0.4.2 未 tag，冷启动触发条件未满足** |
 | 2026-10-25 11:07 | **Lead 决策**：不用 0.4.0 起冷启动（9 哥要求等 0.4.2）；0.4.0 已发布（digest `sha256:c4cd1a61…`），契约复核：main 区间被拒 / PR#1 `<0.5.0` 通过；.34 保持 0.3.4。**rui 维护者 03:04Z 在 #3/#7 回复**（详见下） |
+| 2026-10-25 11:10 | **PR#1 已合入** `dd314cd`（rui_compat `>=0.3.0 <0.5.0`，无 adapter 改动）；合入后 plug-test：rui **0.3.4 与 0.4.0 均 15 PASS / 0 FAIL / 2 WARN / 5 SKIP，逐项一致**（报告 docs/contract-report-0.4.0.json）；已在 rui #3/#7 回报；**0.4.1** 将提供 `audio.voice.followup_delay_ms/replay` 与 `status.listen_port` 修复，届时用上游配置替换 adapter 的 `DOT2_PLAYBACK_GATE_MS`；**0.4.2 tag+digest 仍未出现，冷启动待触发** |
 
 ### 2026-10-25 11:03 — v0.4.0 docker-publish 成功，镜像可用（0.4.2 仍未出现）
 
