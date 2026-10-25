@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — rui 0.4.x 兼容
+
+### Changed
+
+- `plugin.yaml`：`rui_compat` 从 `>=0.3.0 <0.4.0` 放宽到 **`>=0.3.0 <0.5.0`**，插件版本 1.1.0 → **1.1.1**。
+  rui 0.4.0 的 `device/`、`plugins/`、`audio/` 契约模块与 0.3.4 相同（0.4.0 只改了内置插头的版本区间和
+  控制台 API），原区间会被 `load_plugin()` 的版本门直接拒绝；无 adapter 代码改动。
+
 ## 2026-10-25 — P4 接通：rui 0.3.4 + Socket/Plug v1 + 下游镜像
 
 ### Added

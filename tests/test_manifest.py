@@ -32,7 +32,9 @@ class ManifestLayoutTest(unittest.TestCase):
         # config params.plug_id both depend on it.
         self.assertEqual(plugin["id"], "dot2-echomuse")
         self.assertEqual(plugin["trust"], "trusted")
-        self.assertEqual(plugin["rui_compat"], ">=0.3.0 <0.4.0")
+        # rui 0.4.x keeps the same plug/adapter contract; only the manifest gate
+        # rejected 0.4.0. Widened to the next minor so 0.4.0 loads natively.
+        self.assertEqual(plugin["rui_compat"], ">=0.3.0 <0.5.0")
         self.assertEqual(plugin["devices"], ["devices/rs03qr.yaml"])
 
     def test_device_yaml_fields(self) -> None:
