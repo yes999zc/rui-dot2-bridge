@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-25 — 开源（MIT）
+
+- 项目以 **MIT** 许可开源；新增 `LICENSE`、面向新用户的 `README.md` 落地页（含"让 agent 帮你安装"入口）与
+  `docs/agent-install.md`（给 AI agent 的执行手册）。
+- README 补齐前提条件（Echo Dot 2 / firebreak 解锁 / EchoMuse 固件 / rui 版本）、刷机流程摘要、手动安装与验收清单、
+  已知限制、上游致谢（EchoMuse、amonet/firebreak、rui、openWakeWord）。
+
+
 ## Unreleased — rui 0.5.0 兼容
 
 ### Fixed
