@@ -8,6 +8,14 @@
 > （15 PASS / 0 FAIL / 2 WARN / 5 SKIP，与 0.3.4 基线一致）。即 0.4.x 的 adapter 契约未变，
 > 冷启动只差"版本门 + 真机跑通"；**0.4.0 本人不部署**（9 哥要求等 0.4.2）。
 
+## 0.5 0.4.1 起可以直接采用的上游改进（维护者已接受）
+
+| 上游改动 | 我们的替换动作 |
+|---|---|
+| `audio.voice.followup_delay_ms`（默认 1000，0–10000）、`audio.voice.followup_replay`（默认 true） | 冷启动时设 `2500` / `false`，并**移除** `DOT2_PLAYBACK_GATE_MS`（adapter 门控不再需要）；先确认 LX06 路径不回归 |
+| `status/list/detail/connect` 的 `effective_listen_port` 接受 manifest 解析值，`port_conflict` 用 resolved | 真机确认 `/api/v1/devices/dot2/status` 显示 **8870**（现在是 4412） |
+| 多设备/仲裁未交付（仍单音频面单设备） | Dot2 单独实例；LX06 共存继续等 0.4.x 后续 |
+
 ## 1. 分工
 
 | 角色 | 做什么 | 不做什么 |
