@@ -8,7 +8,10 @@ whole 4096-byte speaker periods, an EOS after the reply goes quiet, and a hard
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 import unittest
+from unittest import mock
 
 from rui.device.contract import Capability
 
@@ -389,15 +392,29 @@ class VolumeUnitsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(link.volumes[-1], 50.0)
 
 
-class PlaybackSilenceWindowTest(unittest.TestCase):
-    """Two windows: live during/just after playback, muted only after it.
+PLAYBACK_ENV_PREFIX = "DOT2_PLAYBACK_"
 
-    Barge-in needs the microphone while the Dot is speaking, but RUI's follow-up
-    window (~1 s after the last block) would otherwise transcribe the residual
-    echo into a turn. The gate therefore starts after PLAYBACK_LIVE_S, not at 0.
+
+def make_adapter_with_env(**env: object) -> Dot2Adapter:
+    """Build an adapter with only the given DOT2_PLAYBACK_* variables present."""
+    clean = {key: value for key, value in os.environ.items()
+             if not key.startswith(PLAYBACK_ENV_PREFIX)}
+    clean.update({key: str(value) for key, value in env.items()})
+    with mock.patch.dict(os.environ, clean, clear=True):
+        return make_adapter()
+
+
+class PlaybackSilenceWindowTest(unittest.IsolatedAsyncioTestCase):
+    """Plug 1.1.3 closes self-hearing at the source: the uplink is muted.
+
+    The old two-window policy kept the mic live during playback (for barge) and
+    for a 350 ms drain tail, which is exactly the audio rui's VAD hold buffers
+    and replays as a fake request when the hold lifts. Barge now rides the
+    device-wake channel (`barge_via_device`), so the mic stays muted for the
+    whole playback and the 2500 ms that follow.
     """
 
-    def _adapter(self, *, gate_s: float = 2.0, live_s: float = 0.35,
+    def _adapter(self, *, gate_s: float = 2.5, live_s: float = 0.0,
                  last: float | None = 100.0) -> Dot2Adapter:
         adapter = make_adapter()
         adapter._playback_gate_s = gate_s
@@ -405,28 +422,80 @@ class PlaybackSilenceWindowTest(unittest.TestCase):
         adapter._last_play_at = last
         return adapter
 
-    def test_open_during_playback_so_barge_works(self) -> None:
-        adapter = self._adapter()
-        self.assertFalse(adapter._silence_window_active(100.0))
-        self.assertFalse(adapter._silence_window_active(100.02))
+    def test_defaults_mute_playback_and_keep_the_2500ms_gate(self) -> None:
+        adapter = make_adapter_with_env()
+        self.assertEqual(adapter._playback_live_s, 0.0)
+        self.assertEqual(adapter._playback_gate_s, 2.5)
 
-    def test_open_for_the_device_drain_tail(self) -> None:
+    def test_muted_during_playback(self) -> None:
         adapter = self._adapter()
-        self.assertFalse(adapter._silence_window_active(100.2))
+        for at in (100.001, 100.02, 100.2, 101.5):
+            self.assertTrue(adapter._silence_window_active(at), at)
 
-    def test_muted_inside_the_post_playback_window(self) -> None:
+    def test_muted_until_the_2500ms_window_closes(self) -> None:
         adapter = self._adapter()
         self.assertTrue(adapter._silence_window_active(100.4))
         self.assertTrue(adapter._silence_window_active(101.5))
-        self.assertTrue(adapter._silence_window_active(102.0))  # inclusive edge
+        self.assertTrue(adapter._silence_window_active(102.5))  # inclusive edge
 
     def test_open_again_after_the_window(self) -> None:
         adapter = self._adapter()
-        self.assertFalse(adapter._silence_window_active(102.01))
+        self.assertFalse(adapter._silence_window_active(102.5001))
 
-    def test_disabled_when_gate_is_zero_or_never_played(self) -> None:
-        self.assertFalse(self._adapter(gate_s=0.0)._silence_window_active(100.5))
+    async def test_play_arms_the_window(self) -> None:
+        adapter = make_adapter()
+        adapter._prebuffer_bytes = 0
+        self.assertFalse(adapter._silence_window_active(time.monotonic()))
+        await adapter.play(bytes(4800), sample_rate=48000, channels=1)
+        self.assertIsNotNone(adapter._last_play_at)
+        self.assertTrue(adapter._silence_window_active(adapter._last_play_at + 0.001))
+
+    def test_live_ms_override_restores_the_old_two_window_policy(self) -> None:
+        adapter = make_adapter_with_env(DOT2_PLAYBACK_LIVE_MS=350)
+        self.assertEqual(adapter._playback_live_s, 0.35)
+        adapter._last_play_at = 100.0
+        self.assertFalse(adapter._silence_window_active(100.2))  # drain tail open
+        self.assertTrue(adapter._silence_window_active(100.4))   # then muted
+
+    def test_gate_zero_disables_the_mute(self) -> None:
+        adapter = make_adapter_with_env(DOT2_PLAYBACK_GATE_MS=0)
+        self.assertEqual(adapter._playback_gate_s, 0.0)
+        adapter._last_play_at = 100.0
+        self.assertFalse(adapter._silence_window_active(100.5))
+
+    def test_never_played_means_open(self) -> None:
         self.assertFalse(self._adapter(last=None)._silence_window_active(100.5))
+
+    async def test_stop_playback_opens_the_mic_for_a_barge(self) -> None:
+        adapter = self._adapter()
+        adapter._last_play_at = time.monotonic()
+        await adapter.stop_playback()
+        self.assertIsNone(adapter._last_play_at)
+        self.assertFalse(adapter._silence_window_active(time.monotonic()))
+
+    async def test_frames_are_zeroed_while_the_window_is_active(self) -> None:
+        adapter = make_adapter()
+        adapter._link.blocks = [b"\x10\x20" * 1280]  # non-silent 80 ms block
+        adapter._last_play_at = time.monotonic()
+        frames = await collect_frames(adapter)
+        self.assertEqual(len(frames), 4)
+        self.assertEqual(b"".join(frame.pcm for frame in frames), bytes(4 * 640))
+
+    async def test_frames_pass_through_once_the_window_closed(self) -> None:
+        block = b"\x10\x20" * 1280
+        adapter = make_adapter()
+        adapter._link.blocks = [block]
+        adapter._last_play_at = time.monotonic() - 3.0
+        frames = await collect_frames(adapter)
+        self.assertEqual(b"".join(frame.pcm for frame in frames), block)
+
+    async def test_device_wakes_still_barge_while_the_mic_is_muted(self) -> None:
+        adapter = self._adapter()
+        self.assertTrue(adapter._silence_window_active(100.5))
+        adapter.inject_wake(ts_ms=1.0, barge=True)
+        events = adapter.drain_wakes()
+        self.assertEqual(len(events), 1)
+        self.assertIs(events[0].barge, True)
 
     def test_gate_mic_keeps_the_reference_channels(self) -> None:
         adapter = self._adapter()

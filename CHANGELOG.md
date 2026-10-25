@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased — 插件 1.1.3：播放期静音上行麦克风（关闭自听）
+
+### Fixed
+
+- **自听根因在 adapter 侧关闭**：rui 0.5.3 的 `devices[].audio.voice.ack_echo_ignore_ms`
+  只控制 `vad.hold()` 的窗口长度，窗口内的音频仍会 **buffer-and-replay**。0.5.3 的
+  canary 实测（`.34`）把 cue 回声在窗口内回灌（+2064 ms，窗口 2990 ms），adapter 的
+  麦克风在播放期间是开着的，回声先进入 hold 缓冲，窗口一抬就被重放成“请求”，得到
+  伪造 turn `"在呢。"`。插件 1.1.3 在声源处解决：**播放期间静音上行麦克风**
+  （`PLAYBACK_LIVE_S = 0`，即 `DOT2_PLAYBACK_LIVE_MS=0` 语义），播放结束后继续静音
+  **2500 ms**（`DEFAULT_PLAYBACK_GATE_MS = 2500`，与 rui 侧
+  `post_playback_mute_ms=2500` 对齐，覆盖 rui 的 follow-up 窗口）。回声不再进入 VAD
+  的 hold 缓冲，buffer-and-replay 无从重放。
+- **打断（barge）不受影响**：barge 走设备唤醒事件（`barge_via_device`），不依赖麦克风
+  音频；`stop_playback()`（barge/stop 时 rui 会调用）会立即解除门控，让用户当下这句
+  话被听见。（rui 在每次回复第一块前也会调用 `stop_playback()`，随后的 `play()` 会
+  重新设置门控。）
+- 参考通道保留：`_gate_mic()` 只把麦克风通道置零，`ref_channels` 不受影响。
+
+### Changed
+
+- `plugin.yaml` 插件版本 1.1.2 → **1.1.3**（`rui_compat ">=0.3.0 <0.6.0"` 不变；
+  rui 0.5.3 无设备/插件契约变更）。
+- `health()` 增加 `playback_gate_ms` / `playback_live_ms`，排障时可直接看到门控窗口。
+- 单测：播放静音窗口测试重写为 13 项（默认 0/2500、播放期静音、窗口边界、关闭/覆盖
+  开关、`stop_playback` 解门控、frames 置零/放行、静音期设备唤醒仍可 barge）。
+
+### Env
+
+- `DOT2_PLAYBACK_GATE_MS`（默认 **2500**；`0` 关闭播放后静音）。
+- `DOT2_PLAYBACK_LIVE_MS`（默认 **0**；>0 恢复旧行为“播放中/排空期保持麦克风”，会把
+  回声重新放进 rui 的 hold 缓冲，仅作诊断，不建议生产）。
+- `DOT2_PLAYBACK_DUMP`（调试：把下发设备前的 PCM 落盘）。
+
 ## Unreleased — rui 0.5.2 验证
 
 ### Added

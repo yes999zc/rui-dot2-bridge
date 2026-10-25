@@ -109,9 +109,19 @@ PREBUFFER_S = 0.45
 PREBUFFER_BYTES = int(SPEAKER_RATE * PREBUFFER_S) * 2
 PREBUFFER_START_S = 0.35   # a short reply may never reach the threshold: start anyway
 
-#: Mic stays live this long after the last playback chunk (device buffer drains).
-#: Only then does the post-playback silence window start; see _silence_window_active.
-PLAYBACK_LIVE_S = 0.35
+#: How long the mic may stay live after the last playback chunk. 0.0 (the
+#: default since plug 1.1.3) mutes the uplink from the first frame after the last
+#: chunk: stock Dot 2 firmware has no playback reference, so the microphone hears
+#: our own speaker. rui's VAD keeps a hold buffer during the ack/echo window and
+#: replays it when the hold lifts, which turns a cue echo into a fake "request".
+#: Barge-in does not depend on this window: it arrives as a device wake
+#: (barge_via_device) and stop_playback() opens the gate immediately.
+PLAYBACK_LIVE_S = 0.0
+
+#: Default post-playback mute window. 2500 ms matches the rui 0.5.3 deployment
+#: field `devices[].audio.voice.post_playback_mute_ms` used for the Dot 2 and
+#: covers rui's follow-up window. `DOT2_PLAYBACK_GATE_MS=0` disables it.
+DEFAULT_PLAYBACK_GATE_MS = 2500
 
 EOS_IDLE_S = 1.2
 PLAY_CHUNK_MS = 20        # re-chunk the device's 80 ms blocks for the plane
@@ -272,21 +282,21 @@ class Dot2Adapter(DeviceAdapter):
         self._stream_started = False
         self._stream_bytes = 0
         self._prebuffer_task: asyncio.Task | None = None
-        # Playback gate: while our own audio is on the speaker, the residual echo
-        # is what the controller's VAD/ASR hears as a user turn ("self-hearing").
-        # With device AEC alone at 14-18 dB that residual is above the VAD floor.
-        # Gating the uplink for a configurable hold after playback makes the plug
-        # (speaker side) own the decision instead of asking rui to change.
-        # Two windows, because the two requirements pull in opposite directions:
-        #   * during playback the microphone must stay live, or barge-in can never
-        #     hear the user (gating the whole playback silences every interruption);
-        #   * right after playback the residual echo lands in RUI's follow-up window
-        #     (it opens ~1 s after the last block and replays the tail), where it gets
-        #     transcribed into a turn -- that is the "self-hearing" bug.
-        # So: live during playback and for a short drain tail, muted for the rest of
-        # the gate window. DOT2_PLAYBACK_GATE_MS=0 disables the window entirely.
+        # Playback gate (plug 1.1.3): the stock Dot 2 has no playback reference,
+        # so its microphone hears our own speaker. rui's VAD does not discard that
+        # echo: UtteranceGate.hold() buffers the ack window and replays it when the
+        # hold lifts, so a residual cue becomes a fake user turn ("self-hearing").
+        # rui 0.5.3's ack_echo_ignore_ms only changes how long the buffer is held.
+        # The plug therefore owns the fix at the source: the uplink is muted while
+        # our audio is on the speaker and stays muted for the post-playback window.
+        # Barge-in is unaffected -- it rides the device-wake channel
+        # (barge_via_device) and stop_playback() opens the gate immediately.
+        # DOT2_PLAYBACK_LIVE_MS=350 restores the old "live during playback + drain"
+        # window for diagnostics; DOT2_PLAYBACK_GATE_MS=0 disables the mute.
         _gate = os.environ.get("DOT2_PLAYBACK_GATE_MS", "").strip()
-        self._playback_gate_s = (float(_gate) / 1000.0) if _gate else 0.0
+        self._playback_gate_s = (
+            float(_gate) / 1000.0 if _gate else DEFAULT_PLAYBACK_GATE_MS / 1000.0
+        )
         _live = os.environ.get("DOT2_PLAYBACK_LIVE_MS", "").strip()
         self._playback_live_s = (float(_live) / 1000.0) if _live else PLAYBACK_LIVE_S
         self._last_play_at: float | None = None
@@ -417,6 +427,9 @@ class Dot2Adapter(DeviceAdapter):
             "volume_level": link.volume_level,
             "volume_cap_percent": link.volume_cap_percent,
             "plug_id": self.plug_id,
+            # Playback mute policy: the plugin-side answer to self-hearing.
+            "playback_gate_ms": round(self._playback_gate_s * 1000.0),
+            "playback_live_ms": round(self._playback_live_s * 1000.0),
             # Device-side wake is reported honestly: available only with a live
             # link that proved local scoring; queue counters are diagnostic.
             "device_wake": {
@@ -607,12 +620,14 @@ class Dot2Adapter(DeviceAdapter):
             raise
 
     def _silence_window_active(self, now: float) -> bool:
-        """Whether the microphone must be muted *after* playback, at time `now`.
+        """Whether the uplink mic must be muted for playback self-hearing at `now`.
 
-        Playback itself stays live (barge-in) and so does a short drain tail
-        (`PLAYBACK_LIVE_S` / `DOT2_PLAYBACK_LIVE_MS`) while the device's own
-        buffer finishes; after that the mic is muted until the gate window
-        expires, which covers RUI's follow-up window and its echo.
+        Active from the first frame after the last `play()` chunk until the gate
+        expires -- with the default live window of 0 that is the whole playback
+        plus the post-playback window. A positive `DOT2_PLAYBACK_LIVE_MS` keeps
+        the mic open for that long after the last chunk; that restores the old
+        behaviour and lets the cue echo back into rui's hold buffer, so it is a
+        diagnostic escape hatch, not the shipping mode.
         """
         if not self._playback_gate_s or self._last_play_at is None:
             return False
@@ -776,6 +791,11 @@ class Dot2Adapter(DeviceAdapter):
         self._playing = False
         self._frame_buffer.clear()
         self._stream_started = False
+        # A stop/barge means the user is speaking now: open the uplink gate
+        # immediately instead of keeping it muted for the rest of the window.
+        # rui also calls this before the first chunk of every reply, where the
+        # following play() sets a fresh timestamp.
+        self._last_play_at = None
         if self._prebuffer_task is not None:
             self._prebuffer_task.cancel()
             self._prebuffer_task = None

@@ -15,6 +15,7 @@
 ---
 
 > **状态**：rui 0.5.1 上通过干净安装复测；rui **0.5.2** 上完成真机升级验证（`/devices/{id}/test` → `ok:true`，`/status` → `ready:true`，真实回合 `playback_gap_count=0`）。
+> 插件 **1.1.3** 起在 adapter 侧内置播放门控：**播放期间静音上行麦克风 + 播放后 2500 ms 静音**，barge 仍走设备唤醒事件（见[播放门控](#播放门控插件-113)）。
 > 上游契约自测 0.3.4 / 0.4.0 / 0.4.1 / 0.4.2 / 0.5.0 / 0.5.1 / 0.5.2 均为 **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**。
 
 ## 🤖 如果你想让 agent 帮你安装（推荐）
@@ -53,6 +54,8 @@ Echo Dot 2 (EchoMuse 固件) ──wss:8870 + X-EM-Token──▶ rui-dot2-bridg
 - **不改 rui 源码**：以官方 `RUI_ADAPTER_PLUGINS` + `rui-device/v1` manifest 接入；rui 升级只需抬
   `rui_compat` 上界（当前 `>=0.3.0 <0.6.0`）。
 - **设备只做 I/O 和它自己的 AEC**：`ref_channels=0`，rui 侧 AEC 关闭；adapter 负责 TLS/帧协议/音量/响度/播放收尾。
+- **播放期静音上行（1.1.3+）**：播放期间静音麦克风、播放后保持 2500 ms 静音，堵住 rui
+  `vad.hold()` 的 buffer-and-replay 自听；打断靠设备唤醒事件（`barge_via_device`），不靠麦克风。
 - **一切 Docker**：官方镜像 + `deploy/downstream/Dockerfile` 构建下游镜像（adapter 层），host 网络跑在 NAS 上。
 - **契约优先**：每个 rui 版本都跑官方 `plug-test`，报告在 `docs/contract-report-*.json`。
 - **无私有依赖**：MIT；不包含、也不分发任何 Amazon 专有固件或密钥。
@@ -123,6 +126,25 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/setup/device \
   -d '{"id":"dot2","adapter":"dot2","host":"<rui-host>","room":"客厅","volume":100}'
 ```
 
+### 播放门控（插件 1.1.3+）
+
+播放期间设备麦克风会听到自己的喇叭；rui 的 `vad.hold()` 又会把 ack/回声窗口内的音频**缓冲并在窗口
+放行后重放**，于是 cue 的回声会被当成用户请求（"自听"）。rui 0.5.3 的
+`devices[].audio.voice.ack_echo_ignore_ms` 只改变窗口长度，无法消除回放，所以插件 1.1.3 直接在
+adapter 侧静音上行：
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `DOT2_PLAYBACK_GATE_MS` | `2500` | 播放结束（最后一块）后继续静音麦克风的时间；`0` 关闭播放后静音 |
+| `DOT2_PLAYBACK_LIVE_MS` | `0` | 播放结束后保持麦克风开启的时间；`0` = 播放期立即静音（推荐，1.1.3 默认） |
+| `DOT2_PLAYBACK_DUMP` | 未设置 | 调试：把下发设备前的 PCM 落到该目录 |
+
+一次回复的时序：第一块 `play()` 起麦克风静音 → 整段播放 + 设备缓冲排空期间保持静音 → 最后一块后
+**2500 ms** 解除。**打断不受影响**：设备唤醒事件带 `barge` 标志（`barge_via_device`），
+`stop_playback()` 会立即解除门控。把 `DOT2_PLAYBACK_LIVE_MS` 设为 >0 会恢复 1.1.2 的旧行为，
+使回声重新进入 rui 的 hold 缓冲，仅作诊断，不建议生产使用。参考通道（`ref_channels>0`）只静音
+麦克风通道，参考通道原样透传。
+
 ### 验收清单
 
 | 项 | 判据 |
@@ -147,7 +169,8 @@ docker run --rm --entrypoint python -e PYTHONPATH=/opt/rui-plugins \
   （[openWakeWord](https://github.com/dscripka/openWakeWord) / EchoMuse `oww_forge`），本项目暂不包含。
 - **单设备 / 单音频面**：rui 0.5 的 `multi_device` 默认关闭；多卫星/多房间仲裁在 rui 后续版本。
 - **AEC 归设备**（`ref_channels=0`）：想让 rui 侧做 AEC 时，用上面提到的 2ch 参考补丁。
-- 播放后的麦克风静音窗口使用 rui 原生 `devices[].audio.voice.post_playback_mute_ms`（建议 2500 ms），本项目不再自带门控。
+- 播放门控由插件自带（1.1.3+）：播放期静音上行 + 播放后 2500 ms（见[播放门控](#播放门控插件-113)）；
+  rui 侧的 `devices[].audio.voice.post_playback_mute_ms` / `ack_echo_ignore_ms` 仍可叠加使用，但不再是必需。
 - 上游 rui 的已知小问题（如设备已连接但 status 显示 `ready=false/token_missing`）见 [rui#7](https://github.com/yes999zc/rui/issues/7)。
 
 ## 文档
