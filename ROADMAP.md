@@ -3,27 +3,33 @@
 > 版本：v2（2026-10-24 02:30）｜上一版：v1（2026-10-24 02:10）
 > 变化见文末「§9 v1 → v2 变更」。目标仓库：[rui-dot2-bridge](https://github.com/yes999zc/rui-dot2-bridge)（私有）
 
-## 当前状态（2026-10-25 · v3）
+## 当前状态（2026-10-25 · v4，P4 已接通）
 
-> 本节覆盖下面的历史计划；阶段编号沿用 v2，但状态以本节为准。完整交代见
-> [`docs/handoff-2026-10-25.md`](docs/handoff-2026-10-25.md)。
+> 本节覆盖下面的历史计划；阶段编号沿用 v2，状态以本节为准。完整交代见
+> [`docs/handoff-2026-10-25-p4.md`](docs/handoff-2026-10-25-p4.md)、[`docs/deploy-0.3.4-user-report.md`](docs/deploy-0.3.4-user-report.md)。
 
 | 项 | 状态 |
 |---|---|
 | P0 协议探针 | ✅ 完成（register/ack、帧率、回滚、抓包） |
 | P1 adapter v0（单声道） | ✅ 真机跑通：唤醒→ASR→LLM→TTS、LED、音量、响度、EOS/flush、回滚 |
-| P2 唤醒/打断 | 🟡 功能可用：真机 barge 已触发（服务端停推 3–7 ms）；严格 20 次唤醒率/打断延迟仍待真人标定 |
-| P3 固件补丁（2ch 参考） | ✅ **已发布并安装**：独立仓库 `echomuse-dot2-ref` v0.1.0；设备跑 `20261024-1911-dev`（server_b），server_a 保留旧固件可回滚 |
-| AEC 归属 | ✅ 结论：设备 AEC 稳态 14–18 dB 是该声学链路上限；生产选 **ref_channels=0 + 设备 AEC**，rui AEC 不再必需；2ch 保留但不启用 |
-| P4 生产化 | 🔄 测试实例已在另一台服务器用 **Docker** 部署 rui **v0.2.2**（8080 控制台，healthy），但 **Dot2 接入被协议变更阻塞** |
-| 误唤醒 | ✅ 基线：20 次文件播放（三档音量 / wakeMic 0、6）**0 误唤醒、0 空唤醒**；此前"自听"是 `debug/say` 把输入记成 turn 的误判 |
+| P2 唤醒/打断 | 🟡 0.3.4 上 KWS 路径可用；打断与 20 次唤醒率待真人标定（device_wake 见下） |
+| P3 固件补丁（2ch 参考） | ✅ 独立仓库 `echomuse-dot2-ref` v0.1.0；设备跑 `20261024-1911-dev`（server_b），server_a 可回滚 |
+| AEC 归属 | ✅ 生产选 **ref_channels=0 + 设备 AEC**，rui 侧 AEC 关闭（`audio.aec.enabled=false`）；2ch 保留不启用 |
+| rui 契约 | ✅ 0.3.4 冻结 [socket-plug-v1](https://github.com/yes999zc/rui/blob/v0.3.4/docs/socket-plug-v1.md)；[#7](https://github.com/yes999zc/rui/issues/7)/[#3](https://github.com/yes999zc/rui/issues/3) 已答复并含 0.3.2 审计更正 |
+| P4 测试实例 | ✅ rui **0.3.4** 下游镜像（官方镜像 + adapter 层，`RUI_ADAPTER_PLUGINS`）在 192.168.5.34，healthy；0.2.2/vanilla 0.3.4 可回滚 |
+| Dot2 接入 | ✅ 8870 wss 注册（fw `20261024-1911-dev`）；`adapter_plugins.registered=["dot2"]`、`devices=1`、`audio_plane=true`、`speaker_connected=true` |
+| v1 契约自测 | ✅ 官方 `rui plug-test`：**15 PASS / 0 FAIL / 2 WARN / 5 SKIP**（[`docs/contract-report-0.3.4.json`](docs/contract-report-0.3.4.json)） |
+| 播放 | ✅ 48 kHz 下行；`playback_s` 增长、`playback_gap_count=0`、`max_gap=0`；`audio.playback.rate` 已按设备线格式改 48000 |
+| 自听 | ✅ 已修：门控拆成"播放中保持麦克风（保打断）/ 播放后 2.5 s 静音"；18.6 s 长回复后无第二段 turn |
+| 断线恢复 | ✅ `docker compose restart rui` 后 **14 s** 设备重连，0 traceback |
+| device_wake | 🟡 插头已实现 `drain_wakes()`；**设备无 OWW 运行时/模型** → 能力诚实降级为 RUI KWS（[`docs/p4-device-wake-feasibility.md`](docs/p4-device-wake-feasibility.md)） |
 
-**当前阻塞**：rui 0.2.2 改成单入口 4412（`ws//?token=`），且声明式 plug 不执行 entrypoint、一个音频面只驱动一台设备；
-EchoMuse 需要 `wss + X-EM-Token`。已提 [rui#7](https://github.com/yes999zc/rui/issues/7) 问契约（多卫星共存、out-of-tree adapter、
-AEC/wake 归属、端口、响度）。**在 rui 回复并定稿 plug/接口文档前，桥代码不迁移。**
+**当前阻塞**：无（自动化部分全绿）。
 
-**下一步**：① 等 rui 答复/文档；② 桥迁移到 0.2.x 契约（端口保持 8870，LX06 共存，唤醒仲裁归 rui）；
-③ 以 Docker 方式冷部署（纯用户视角智能体先跑、Lead 再配参数）；④ 端到端回归（唤醒/打断/自听/回滚）。
+**待真人**：① 说"你好小瑞"→回合；② 播放中打断；③ 音量/LED 体感；④ 20 次误唤醒基线。
+
+**下一步**：① 真人验收；② OWW 模型决策（stock 英文先跑通链路 vs 训"你好小瑞"）；
+③ LX06 与 Dot2 同实例共存等 rui 0.4（0.3 仍是一音频面一设备）；④ 生产 NAS 冷部署与回滚演练。
 
 ## 0. 一页纸
 

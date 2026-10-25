@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-10-25 — P4 接通：rui 0.3.4 + Socket/Plug v1 + 下游镜像
+
+### Added
+
+- **Socket/Plug v1 插头**：`plugin.yaml` + `devices/rs03qr.yaml`（`rui-device/v1`，class B，trust trusted，
+  `runtime.listen_port=8870`、`token_env=DOT2_EM_TOKEN`）随 adapter 包发布；官方入口改为
+  `RUI_ADAPTER_PLUGINS=dot2=rui_dot2_bridge.adapter:build`，删除 `sitecustomize` 注入。
+- `wake.py`：EchoMuse `oww_wake` → v1 `DeviceWake` 六字段（单调 `ts_ms`、0–1 归一化、严格 bool `barge`、
+  dBFS `level`、无效事件带原因拒绝）；`drain_wakes()` + `BoundedWakeQueue(32)`。
+- `deploy/downstream/`：官方镜像 + adapter 层的下游镜像、compose、manifest 安装脚本与 README。
+- 契约自测：官方 `rui plug-test` 在 0.3.4 上 15 PASS / 0 FAIL / 2 WARN / 5 SKIP（`docs/contract-report-0.3.4.json`）。
+- 文档：`docs/handoff-2026-10-25-p4.md`、`docs/p4-device-wake-feasibility.md`、`docs/p4-e2e-runbook-0.3.4.md`、
+  `docs/deploy-0.3.4-user-report.md`。
+
+### Changed
+
+- adapter 迁移到 `rui.device.contract`：`probe()` 只在设备真的能打分时宣告 `device_wake`/`barge_via_device`；
+- 音量两层单位：`set_volume()` 0–100 ↔ `services` 0–255 ↔ 设备 0–127（越界拒绝，不静默 clamp）；
+- `build(dev, cfg)` 优先级 DeviceConfig > params > `DOT2_*` env > 插件缺省；X-EM-Token 支持 `<secrets_dir>/device_token` 文件回退（env 优先，日志只记来源）；
+- 测试主机（192.168.5.34）从 rui 0.2.2 升级到 **0.3.4**，再切到下游镜像；设备以 `devices[].adapter=dot2` 接入 8870。
+
+### Fixed
+
+- **自听**：播放门控拆成两段——播放中保持麦克风（打断可用），设备排空尾巴 0.35 s 后静音到 `DOT2_PLAYBACK_GATE_MS`
+  （生产 2500 ms）。修复 rui follow-up 窗口把残响转录成回合（实测 18.6 s 长回复后不再产生第二段 turn）。
+- `audio.playback.rate` 16 kHz → **48 kHz**（设备线格式），否则每条回复都被 adapter 拒绝播放；
+  capture 改为 16 kHz / 1ch / 0ref，rui 侧 AEC 关闭（AEC 归设备）。
+
 ## 2026-10-25 — 0.2.2 迁移暂停 / AEC 结论 / 补丁落地
 
 ### Added
