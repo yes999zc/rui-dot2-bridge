@@ -1,6 +1,6 @@
 # 会话简报（唯一入口；新会话先读这个）
 
-> 最后更新：2026-10-25 16:42 ｜ 上下文重置/新开会话时的**唯一入口**。
+> 最后更新：2026-10-25 16:47 ｜ 上下文重置/新开会话时的**唯一入口**。
 > 冻结声明：讨论室（飞书群 / agent-mailbox / agent-room）这条线**已冻结**，9 哥要单独再议，不要继续推进。
 
 ## 一句话现状
@@ -30,7 +30,7 @@ Dot 2 已作为 **rui 0.4.2** 卫星跑通（.34：`rui-dot2:0.4.2` healthy、88
 |---|---|
 | rui 上游 | 最新发布 **0.4.2**（digest `sha256:3791ccfd…`）；**0.5.0 开发中（对外发布版，9 哥从这版开始宣传）**，发布后需对齐 `rui_compat` 上界；`#7`/`#11` 已回复（B 路线原生字段 `post_playback_mute_ms`、token 显示修复、Phase 2 仲裁草案 v0.1 对 adapter 无接口改动） |
 | 当前部署 | `rui-dot2:0.4.2`（base 官方 0.4.2）+ manifest `1.1.1` / `rui_compat ">=0.3.0 <0.5.0"` |
-| 契约自测 | rui **0.3.4 / 0.4.0 / 0.4.1 / 0.4.2**：均 **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**（`docs/contract-report-0.4.*.json`） |
+| 契约自测 | rui **0.3.4 / 0.4.0 / 0.4.1 / 0.4.2**：均 **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**；插件已升 **1.1.2 / `rui_compat ">=0.3.0 <0.6.0"`**（0.4.2 上重跑同基线，`docs/contract-report-0.4.2-plugin-1.1.2.json`） |
 | #7 清单 | ① /health ✓ ② status 8870 + `DOT2_EM_TOKEN` ✓ ③ **撤门控 ✗（自听复现，已回退）** ④ 回滚演练 ✓ / 真人回合暂缓 |
 | rui#11 | Q1–Q7 已答复、仲裁决策冻结：**0.5 直接单实例多 plane**；多实例只是过渡；adapter 不为仲裁加字段 |
 | 设备唤醒 | `device_wake` 契约已实现但设备缺 OWW 运行时/模型（stock 仅英文），诚实降级 KWS；见 `docs/p4-device-wake-feasibility.md` |

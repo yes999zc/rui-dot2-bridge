@@ -1,8 +1,8 @@
 schema: rui-plugin/v0
 id: dot2-echomuse
 name: "Echo Dot 2 (EchoMuse) plug"
-version: 1.1.1
-rui_compat: ">=0.3.0 <0.5.0"
+version: 1.1.2
+rui_compat: ">=0.3.0 <0.6.0"
 license: MIT
 maintainer: "Bakey Zhang"
 homepage: "https://github.com/yes999zc/rui-dot2-bridge"

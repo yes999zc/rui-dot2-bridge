@@ -49,6 +49,8 @@
 | 2026-10-25 16:16 | rui 回复 #7 / #12：① 门控走 **B 路线**（上游新增 `devices[].audio.voice.post_playback_mute_ms`，默认 0，落地前继续保留 adapter 门控）；② token 显示 bug 进打磨批（短期按"status 只认 env/secrets store"写文档）；③ 音量百分数换算欢迎 docs PR；④ 冷启动反馈 C2/C3/C4/K1 与 C1/C5 文档项接受（欢迎 docs PR），干净主机冷装他们暂不排 |
 | 2026-10-25 16:21 | rui #11 Phase 2 草案 v0.1：**对 adapter/manifest 无接口改动**（六字段不变、多平面在 rui 内部、`rui_compat` 待 0.5 发布时更新兼容矩阵）；部署侧仅 `devices[].room`（多设备启用时必填）与 `post_playback_mute_ms` 两个字段 |
 | 2026-10-25 16:40 | 9 哥定：测试暂停（新会话统一调度，另有 1×LX06 + 4–5×Dot2 待部署）；**盯 rui v0.5.0 对外发布版**，每 30 min 扫描；发布后在 .34 做完全干净安装（安装专用 agent → Lead 填配置），安装问题单独开 issue。设备端唤醒路线 B 的资产/打分器已真机验证、adapter 改动已提交，`.34` 已恢复到稳定 `rui-dot2:0.4.2` |
+| 2026-10-25 16:37 | rui 回复 `rui_compat` 口径：**0.5.0 要求上界改到 `<0.6.0`**（range 语义不变，匹配 `rui.__version__`）；确认 **0.5.0 无设备/插件契约变更**（Phase 2 全在 rui 内部）；发布时在 #7 公布 tag + GHCR digest + 平台，并先补 `docs/deploy.md` 下游适配器一节。#11 同时确认：候选→合并→准入链完全在 rui 内部、流式 `oww_wake` 形态继续成立、barge 仍由 rui enrich |
+| 2026-10-25 16:45 | 我们已把 `plugin.yaml` 抬到 **1.1.2 / `>=0.3.0 <0.6.0`**，`tested_with` 补到 0.4.2；在 0.4.2 上重跑 plug-test **15/0/2/5**（`docs/contract-report-0.4.2-plugin-1.1.2.json`）；已 push。9 哥授权：**v0.5.0 出现即开跑干净安装**，不再等确认 |
 
 ### 2026-10-25 15:27 — v0.4.2 发布（tag + digest + 4 项清单），多设备仲裁冻结
 

@@ -38,9 +38,11 @@
      -m rui plug-test /opt/rui-plugins/rui_dot2_bridge --adapter rui_dot2_bridge.adapter:build --json
    ```
    要求 0 FAIL；WARN/SKIP 与 0.3.4/0.4.x 基线一致（15/0/2/5）。
-3. **兼容门槛**：`plugin.yaml` 的 `rui_compat` 目前是 `>=0.3.0 <0.5.0`，**0.5.0 会被拒**。先与 rui 对齐上界（建议 `<0.6.0`），
-   改 manifest → 重跑 plug-test → 再构建下游镜像 `rui-dot2:0.5.0`（x86_64 宿主、`DOCKER_BUILDKIT=0`）。
-4. **装 manifest 两份**：镜像内 + `data/plugs/dot2-echomuse/`；`.env` 恢复 `DOT2_*`（含 `DOT2_PLAYBACK_GATE_MS=2500`、
+3. **兼容门槛（已与 rui 对齐 2026-10-25 16:37）**：`rui_compat` 已改为 **`>=0.3.0 <0.6.0`**（plugin 1.1.2）。
+   rui 确认 0.5.0 **无设备/插件契约变更**（Phase 2 全部在 rui 内部），只需上界；0.5.0 上先跑 plug-test（要求 0 FAIL、
+   WARN/SKIP 与基线一致）→ 再构建下游镜像 `rui-dot2:0.5.0`（x86_64 宿主、`DOCKER_BUILDKIT=0`）。
+   发布公告在 rui#7（tag + GHCR digest + 平台）。
+4. **装 manifest 两份**：镜像内 + `data/plugs/dot2-echomuse/`；设备配置里 `room` 要带上（0.5.0 起 `multi_device.enabled=true` 时必填）；`.env` 恢复 `DOT2_*`（含 `DOT2_PLAYBACK_GATE_MS=2500`、
    `DOT2_VOLUME_CAP=100`）；`config.yaml` 由官方 `POST /api/v1/setup/device` 写入（`adapter=dot2`、`id=dot2`、`listen_port=8870`），
    `devices[].volume=100`，`audio.playback.rate=48000`、capture 16k/1/0 ref、`aec.enabled=false`；
    0.5.0 若已交付 `devices[].audio.voice.post_playback_mute_ms`（#7 B 路线）→ 设 2500 并**撤掉** adapter 门控，否则保留门控。

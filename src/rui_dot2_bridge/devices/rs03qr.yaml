@@ -26,5 +26,5 @@ params:
   - {key: wake_words, label: "唤醒词", type: list, default: ["你好小瑞"], max: 3}
   - {key: port, label: "入站端口", type: int, default: 8870, help: "EchoMuse wss listen port; the device dials this port."}
   - {key: oww_model, label: "设备端唤醒模型", type: string, default: "", help: "Only set when a matching OWW model was pushed to the device; empty keeps RUI KWS."}
-compatibility: {rui_min: "0.3.0", tested_with: ["0.3.4"], notes: "device_wake is opt-in: it needs a device-side OWW model for the configured wake words; no reference channel (device AEC)."}
+compatibility: {rui_min: "0.3.0", tested_with: ["0.3.4", "0.4.0", "0.4.1", "0.4.2"], notes: "device_wake is opt-in: it needs a device-side OWW model for the configured wake words; no reference channel (device AEC)."}
 acceptance: {verified: false, last_verified: "", evidence: "Contract kit report: artifacts/contract-report.json (rui 0.3.4). Live-device acceptance pending."}
