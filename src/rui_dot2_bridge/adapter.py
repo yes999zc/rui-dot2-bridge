@@ -41,7 +41,7 @@ from rui.device.contract import (
 from . import plug as plug_manifest
 from .control import start_control_server
 from .device_link import DeviceLink
-from .dsp import LoudnessConfig, LoudnessProcessor, fade_in_pcm, fade_out_pcm
+from .dsp import LoudnessConfig, LoudnessProcessor, fade_out_pcm
 from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE
 from .volume import DEVICE_LEVEL_MAX, VOLUME_CAP_PERCENT, clamp_percent
 
@@ -744,10 +744,12 @@ class Dot2Adapter(DeviceAdapter):
             await self._link.end_stream()
             return
         if self._frame_buffer:
-            # A longer tail is still owed to the listener, but it plays one EOS_IDLE
-            # late: fade BOTH edges and pad to a whole 42.7 ms period so the device
-            # gets a clean period instead of a hard onset out of silence.
-            tail = fade_in_pcm(fade_out_pcm(bytes(self._frame_buffer)))
+            # The tail continues the same stream (the tail is played straight after
+            # the last whole period, no gap), so it must NOT be faded in: an onset
+            # ramp there modulates the last syllable and is heard as a tick ("在呢",
+            # 2026-10-25). Only the true end of the audio is faded out, then padded
+            # with silence to a whole 42.7 ms period.
+            tail = fade_out_pcm(bytes(self._frame_buffer))
             if len(tail) < SPEAKER_CHUNK_BYTES:
                 tail += bytes(SPEAKER_CHUNK_BYTES - len(tail))
             self._frame_buffer.clear()
