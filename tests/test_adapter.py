@@ -363,5 +363,53 @@ class VolumeUnitsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(link.volumes[-1], 50.0)
 
 
+class PlaybackSilenceWindowTest(unittest.TestCase):
+    """Two windows: live during/just after playback, muted only after it.
+
+    Barge-in needs the microphone while the Dot is speaking, but RUI's follow-up
+    window (~1 s after the last block) would otherwise transcribe the residual
+    echo into a turn. The gate therefore starts after PLAYBACK_LIVE_S, not at 0.
+    """
+
+    def _adapter(self, *, gate_s: float = 2.0, live_s: float = 0.35,
+                 last: float | None = 100.0) -> Dot2Adapter:
+        adapter = make_adapter()
+        adapter._playback_gate_s = gate_s
+        adapter._playback_live_s = live_s
+        adapter._last_play_at = last
+        return adapter
+
+    def test_open_during_playback_so_barge_works(self) -> None:
+        adapter = self._adapter()
+        self.assertFalse(adapter._silence_window_active(100.0))
+        self.assertFalse(adapter._silence_window_active(100.02))
+
+    def test_open_for_the_device_drain_tail(self) -> None:
+        adapter = self._adapter()
+        self.assertFalse(adapter._silence_window_active(100.2))
+
+    def test_muted_inside_the_post_playback_window(self) -> None:
+        adapter = self._adapter()
+        self.assertTrue(adapter._silence_window_active(100.4))
+        self.assertTrue(adapter._silence_window_active(101.5))
+        self.assertTrue(adapter._silence_window_active(102.0))  # inclusive edge
+
+    def test_open_again_after_the_window(self) -> None:
+        adapter = self._adapter()
+        self.assertFalse(adapter._silence_window_active(102.01))
+
+    def test_disabled_when_gate_is_zero_or_never_played(self) -> None:
+        self.assertFalse(self._adapter(gate_s=0.0)._silence_window_active(100.5))
+        self.assertFalse(self._adapter(last=None)._silence_window_active(100.5))
+
+    def test_gate_mic_keeps_the_reference_channels(self) -> None:
+        adapter = self._adapter()
+        adapter.ref_channels = 1
+        adapter.channels = 2
+        silenced = adapter._gate_mic(b"\x01\x02\x03\x04")
+        self.assertEqual(silenced[:2], b"\x00\x00")
+        self.assertEqual(silenced[2:], b"\x03\x04")
+
+
 if __name__ == "__main__":
     unittest.main()

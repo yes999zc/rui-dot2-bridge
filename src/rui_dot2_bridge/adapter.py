@@ -109,6 +109,10 @@ PREBUFFER_S = 0.45
 PREBUFFER_BYTES = int(SPEAKER_RATE * PREBUFFER_S) * 2
 PREBUFFER_START_S = 0.35   # a short reply may never reach the threshold: start anyway
 
+#: Mic stays live this long after the last playback chunk (device buffer drains).
+#: Only then does the post-playback silence window start; see _silence_window_active.
+PLAYBACK_LIVE_S = 0.35
+
 EOS_IDLE_S = 1.2
 PLAY_CHUNK_MS = 20        # re-chunk the device's 80 ms blocks for the plane
 
@@ -247,8 +251,18 @@ class Dot2Adapter(DeviceAdapter):
         # With device AEC alone at 14-18 dB that residual is above the VAD floor.
         # Gating the uplink for a configurable hold after playback makes the plug
         # (speaker side) own the decision instead of asking rui to change.
+        # Two windows, because the two requirements pull in opposite directions:
+        #   * during playback the microphone must stay live, or barge-in can never
+        #     hear the user (gating the whole playback silences every interruption);
+        #   * right after playback the residual echo lands in RUI's follow-up window
+        #     (it opens ~1 s after the last block and replays the tail), where it gets
+        #     transcribed into a turn -- that is the "self-hearing" bug.
+        # So: live during playback and for a short drain tail, muted for the rest of
+        # the gate window. DOT2_PLAYBACK_GATE_MS=0 disables the window entirely.
         _gate = os.environ.get("DOT2_PLAYBACK_GATE_MS", "").strip()
         self._playback_gate_s = (float(_gate) / 1000.0) if _gate else 0.0
+        _live = os.environ.get("DOT2_PLAYBACK_LIVE_MS", "").strip()
+        self._playback_live_s = (float(_live) / 1000.0) if _live else PLAYBACK_LIVE_S
         self._last_play_at: float | None = None
         dump = os.environ.get("DOT2_PLAYBACK_DUMP", "").strip()
         self._dump_dir = Path(dump) if dump else None
@@ -545,12 +559,8 @@ class Dot2Adapter(DeviceAdapter):
                 for piece in _rechunk(block, self.channels, PLAY_CHUNK_MS):
                     if not piece:
                         continue
-                    if self._playback_gate_s and self._last_play_at is not None:
-                        quiet = time.monotonic() - self._last_play_at > self._playback_gate_s
-                        # rate is set by the last play() call; EOS/idle does not
-                        # update it, so a 0.5 s hold covers the speaker tail.
-                        if not quiet:
-                            piece = self._gate_mic(piece)
+                    if self._silence_window_active(time.monotonic()):
+                        piece = self._gate_mic(piece)
                     self._seq += 1
                     yield AudioFrame(
                         device_id=self.device_id,
@@ -563,6 +573,19 @@ class Dot2Adapter(DeviceAdapter):
                     )
         except asyncio.CancelledError:
             raise
+
+    def _silence_window_active(self, now: float) -> bool:
+        """Whether the microphone must be muted *after* playback, at time `now`.
+
+        Playback itself stays live (barge-in) and so does a short drain tail
+        (`PLAYBACK_LIVE_S` / `DOT2_PLAYBACK_LIVE_MS`) while the device's own
+        buffer finishes; after that the mic is muted until the gate window
+        expires, which covers RUI's follow-up window and its echo.
+        """
+        if not self._playback_gate_s or self._last_play_at is None:
+            return False
+        elapsed = now - self._last_play_at
+        return self._playback_live_s < elapsed <= self._playback_gate_s
 
     def _gate_mic(self, piece: bytes) -> bytes:
         """Silence the microphone channel(s), keeping the reference intact."""
