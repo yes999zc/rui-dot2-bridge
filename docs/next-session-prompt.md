@@ -10,7 +10,7 @@
 **不改 rui 源码**，用 out-of-tree adapter/plug（`RUI_ADAPTER_PLUGINS` + `rui-device/v1` manifest）；
 AEC 归设备（`ref_channels=0`）；部署一律 Docker。
 
-## 当前状态（2026-10-25 16:42）
+## 当前状态（2026-10-25 18:22）
 
 - 测试机 **.34** 跑 `rui-dot2:0.4.2`（官方 0.4.2 + 内置 dot2 bridge，manifest 1.1.1），`healthy`；
   Dot 2 在线：`devices=1, enabled=1, audio_plane=true, speaker_connected=true, device_errors=0,

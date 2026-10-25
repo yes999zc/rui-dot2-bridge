@@ -1,13 +1,15 @@
 # 会话简报（唯一入口；新会话先读这个）
 
-> 最后更新：2026-10-25 18:07 ｜ 上下文重置/新开会话时的**唯一入口**。
+> 最后更新：2026-10-25 18:22 ｜ 上下文重置/新开会话时的**唯一入口**。
 > 冻结声明：讨论室（飞书群 / agent-mailbox / agent-room）这条线**已冻结**，9 哥要单独再议，不要继续推进。
 
 ## 一句话现状
 
 Dot 2 已作为 **rui 0.4.2** 卫星跑通（.34：`rui-dot2:0.4.2` healthy、8870 在线、音量已修）；
 **测试阶段已暂停**——9 哥会新建会话统一调度测试（后面还有 1 台 LX06 + 4–5 台 Dot2 到货）。
-当前主线：**rui v0.5.0 已发布（18:03）**，`.34` 已清空并派出**安装专用 agent** 装 vanilla 0.5.0；装完由 Lead 填配置 + adapter 层并验收（见 `docs/clean-install-0.5.0.md`）。
+**rui 0.5.0 干净安装验收通过（18:20）**：`.34` 现跑 `rui-dot2:0.5.0`（base digest `01a3afe1…`）+ `devices=1`/audio_plane/speaker 在线；
+**B 路线已验证**：`devices[].audio.voice.post_playback_mute_ms=2500` 在单平面模式下生效，**.34 已撤 adapter 门控**（代码保留为回退）。
+详情见 `docs/clean-install-0.5.0-result.md`。真机测试仍等 9 哥新会话统一调度。
 设备端唤醒（路线 B）的资产与打分器已在真机验证、adapter 侧改动已完成并测试通过，等新会话统一做真人触发。
 
 ## 服务器与环境
@@ -28,7 +30,7 @@ Dot 2 已作为 **rui 0.4.2** 卫星跑通（.34：`rui-dot2:0.4.2` healthy、88
 
 | 项 | 值 |
 |---|---|
-| rui 上游 | 最新发布 **0.5.0**（tag `v0.5.0`=`406785e`，digest `sha256:01a3afe1…`，amd64+arm64；对外发布版）——config v3 + Phase 2 多平面/仲裁（**默认 `multi_device.enabled=false`，与 0.4.x 逐字节一致**）+ per-plane health + 打磨批；**adapter/plug 契约无变化** |
+| rui 上游 | **0.5.0 已发布并验收**（tag `v0.5.0`=`406785e`，digest `sha256:01a3afe1…`）；config v3 + Phase 2（默认关）+ per-plane health；**adapter/plug 契约无变化**；安装侧问题：rui#13（install.sh heredoc）、rui#14（fetch-models 429 静默） |
 | 当前部署 | `rui-dot2:0.4.2`（base 官方 0.4.2）+ manifest `1.1.1` / `rui_compat ">=0.3.0 <0.5.0"` |
 | 契约自测 | rui **0.3.4 / 0.4.0 / 0.4.1 / 0.4.2**：均 **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**；插件已升 **1.1.2 / `rui_compat ">=0.3.0 <0.6.0"`**（0.4.2 上重跑同基线，`docs/contract-report-0.4.2-plugin-1.1.2.json`） |
 | #7 清单 | ① /health ✓ ② status 8870 + `DOT2_EM_TOKEN` ✓ ③ **撤门控 ✗（自听复现，已回退）** ④ 回滚演练 ✓ / 真人回合暂缓 |
