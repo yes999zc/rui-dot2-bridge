@@ -1,13 +1,13 @@
 # 会话简报（唯一入口；新会话先读这个）
 
-> 最后更新：2026-10-25 18:22 ｜ 上下文重置/新开会话时的**唯一入口**。
+> 最后更新：2026-10-25 19:32 ｜ 上下文重置/新开会话时的**唯一入口**。
 > 冻结声明：讨论室（飞书群 / agent-mailbox / agent-room）这条线**已冻结**，9 哥要单独再议，不要继续推进。
 
 ## 一句话现状
 
 Dot 2 已作为 **rui 0.4.2** 卫星跑通（.34：`rui-dot2:0.4.2` healthy、8870 在线、音量已修）；
 **测试阶段已暂停**——9 哥会新建会话统一调度测试（后面还有 1 台 LX06 + 4–5 台 Dot2 到货）。
-**rui 0.5.0 干净安装验收通过（18:20）**：`.34` 现跑 `rui-dot2:0.5.0`（base digest `01a3afe1…`）+ `devices=1`/audio_plane/speaker 在线；
+**rui 0.5.1 干净安装复测完成（19:30）**：0.5.1 = 安装路径补丁（#13/#14 已修，确认生效），但新发现文档 `curl | sh` 因 health 探针抢 stdin 的 blocking 问题（[rui#15](https://github.com/yes999zc/rui/issues/15)）；.34 现跑 `rui-dot2:0.5.1`，验收通过（`docs/clean-install-0.5.1-result.md`）。此前：**0.5.0 干净安装验收通过（18:20）**：`.34` 现跑 `rui-dot2:0.5.0`（base digest `01a3afe1…`）+ `devices=1`/audio_plane/speaker 在线；
 **B 路线已验证**：`devices[].audio.voice.post_playback_mute_ms=2500` 在单平面模式下生效，**.34 已撤 adapter 门控**（代码保留为回退）。
 详情见 `docs/clean-install-0.5.0-result.md`。真机测试仍等 9 哥新会话统一调度。
 设备端唤醒（路线 B）的资产与打分器已在真机验证、adapter 侧改动已完成并测试通过，等新会话统一做真人触发。

@@ -27,7 +27,7 @@
   （Phase 2 多平面/仲裁全部在 rui 内部，`drain_wakes()` 时序与 `DeviceWake` 六字段不变），只需要改上界。
   配置侧新增两条（不启用多设备时行为不变）：`devices[].room` 在 `multi_device.enabled=true` 时必填、
   `devices[].audio.voice.post_playback_mute_ms`（默认 0，设备级播放后静音窗口）。
-- adapter 侧无代码改动；`docs/rs03qr` 的 `tested_with` 更新到 0.4.2（契约自测逐版本 15/0/2/5）。
+- adapter 侧无代码改动；`devices/rs03qr.yaml` 的 `tested_with` 更新到 0.5.1（契约自测逐版本 15/0/2/5）。
 
 ## 2026-10-25 — rui 0.4.x 兼容
 
