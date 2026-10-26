@@ -58,7 +58,20 @@ docker run --rm --entrypoint rui rui-dot2:1.3.1 \
 
 ## 让 AI 帮你装
 
-把这段贴给任意 AI 助手：**目标**用 Docker 跑起 `rui 0.7.2` + 本插件（`1.3.1`）；**前置检查** docker compose、8080 端口、5 GB 磁盘；**步骤**克隆 rui `v0.7.2` 与两个桥仓、按 `rui/examples/two-speakers/compose.yaml` 放插件与 env、`docker compose up -d`、`curl localhost:8080/health` 看 `adapter_plugins.registered` 是否含 `dot2`；**失败时**看 `logs --tail=80 rui` 里的 `config error` / `adapter` / `missing TLS material`；**回滚**把 image 换回上一版 tag。官方镜像已内置 ffmpeg，不需要自己编译。
+把下面这段贴给任意 AI 助手：
+
+```text
+目标：用 Docker 跑起 rui 0.7.2 + 本插件 1.3.1（adapter id = dot2）。
+前置：docker compose version 通过；8080 空闲；5 GB 磁盘。
+1) git clone --branch v0.7.2 https://github.com/yes999zc/rui.git && cd rui/examples/two-speakers
+2) git clone --branch v1.3.1 https://github.com/yes999zc/rui-dot2-bridge.git
+3) mkdir -p plugins && cp -r ../rui-dot2-bridge/src/rui_dot2_bridge plugins/
+4) 写 ./config/config.yaml（web.auth_token + devices[]，含 dot2 的 host/listen_port）
+5) export DOT2_EM_TOKEN=<设备令牌>; docker compose up -d
+6) 验收：/health 的 adapter_plugins.registered 必须含 "dot2"、devices 正确、device_errors=0
+失败看：docker compose logs --tail=80 rui 的 config error / adapter / TLS；回滚：down 后换回上一版 image tag
+不需要自己编译 ffmpeg（镜像已内置）
+```
 
 ## 兼容性与前置条件
 
@@ -158,7 +171,20 @@ In production, run it with Compose: swap the image to `rui-dot2:1.3.1` and set `
 
 ## Let an AI install it
 
-Paste this: **goal** run `rui 0.7.2` + this plug (`1.3.1`) with Docker; **preflight** docker compose, port 8080, 5 GB; **steps** clone rui `v0.7.2` and both bridges, follow `rui/examples/two-speakers/compose.yaml` for plugin mounts and env, `docker compose up -d`, then check `/health` for `adapter_plugins.registered` containing `dot2`; **on failure** read `logs --tail=80 rui` for `config error` / `adapter` / `missing TLS material`; **rollback** by switching the image back to the previous tag. No ffmpeg build required.
+Paste this:
+
+```text
+Goal: run rui 0.7.2 + this plug 1.3.1 (adapter id = dot2) with Docker.
+Preflight: docker compose version; port 8080 free; 5 GB disk.
+1) git clone --branch v0.7.2 https://github.com/yes999zc/rui.git && cd rui/examples/two-speakers
+2) git clone --branch v1.3.1 https://github.com/yes999zc/rui-dot2-bridge.git
+3) mkdir -p plugins && cp -r ../rui-dot2-bridge/src/rui_dot2_bridge plugins/
+4) write ./config/config.yaml (web.auth_token + devices[] with host/listen_port for dot2)
+5) export DOT2_EM_TOKEN=<device token>; docker compose up -d
+6) verify: /health adapter_plugins.registered contains "dot2", devices correct, device_errors=0
+On failure: docker compose logs --tail=80 rui (config error / adapter / TLS); rollback: down and switch the image tag back
+No ffmpeg build needed (the image ships it)
+```
 
 ## Compatibility and prerequisites
 
