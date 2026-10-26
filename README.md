@@ -56,6 +56,10 @@ docker run --rm --entrypoint rui rui-dot2:1.3.1 \
 
 生产里用 Compose 起：把镜像换成 `rui-dot2:1.3.1`，并按设备设置 `DOT2_HOST` / `DOT2_LISTEN_PORT` / `DOT2_EM_TOKEN`（模板见 `deploy/`）。
 
+## 让 AI 帮你装
+
+把这段贴给任意 AI 助手：**目标**用 Docker 跑起 `rui 0.7.2` + 本插件（`1.3.1`）；**前置检查** docker compose、8080 端口、5 GB 磁盘；**步骤**克隆 rui `v0.7.2` 与两个桥仓、按 `rui/examples/two-speakers/compose.yaml` 放插件与 env、`docker compose up -d`、`curl localhost:8080/health` 看 `adapter_plugins.registered` 是否含 `dot2`；**失败时**看 `logs --tail=80 rui` 里的 `config error` / `adapter` / `missing TLS material`；**回滚**把 image 换回上一版 tag。官方镜像已内置 ffmpeg，不需要自己编译。
+
 ## 兼容性与前置条件
 
 - `rui` **>=0.6.0 <0.8.0**（本版面向 0.7.2 验证）；Python **3.11+**（下游镜像已内置）。
@@ -151,6 +155,10 @@ docker run --rm --entrypoint rui rui-dot2:1.3.1 \
 ```
 
 In production, run it with Compose: swap the image to `rui-dot2:1.3.1` and set `DOT2_HOST` / `DOT2_LISTEN_PORT` / `DOT2_EM_TOKEN` per device (templates under `deploy/`).
+
+## Let an AI install it
+
+Paste this: **goal** run `rui 0.7.2` + this plug (`1.3.1`) with Docker; **preflight** docker compose, port 8080, 5 GB; **steps** clone rui `v0.7.2` and both bridges, follow `rui/examples/two-speakers/compose.yaml` for plugin mounts and env, `docker compose up -d`, then check `/health` for `adapter_plugins.registered` containing `dot2`; **on failure** read `logs --tail=80 rui` for `config error` / `adapter` / `missing TLS material`; **rollback** by switching the image back to the previous tag. No ffmpeg build required.
 
 ## Compatibility and prerequisites
 
