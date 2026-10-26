@@ -246,9 +246,10 @@ rui-canary-official
 | 7 | 两路 plane 真实起来 | 4412 + 8870 均 listening，`audio_devices` 两行 `running=true` |
 | 8 | 设备离线不打挂控制面 | `/health` HTTP 200、`device_errors=0` |
 
-未覆盖（明确列出，不要当成已验证）：
+未覆盖（明确列出，不要当成已验证；**范围为 0.6.0 官方镜像 canary 轮次，2026-10-26，本机 arm64，无真机**）：
 
 - **未连真机**：LX06 / Dot 2 都没上电，唤醒、播放、AEC、音量、回连 token 校验均为未验证。
+  本轮**不**用于否定 README 的 30/30、26/30 等数字——那些来自 rui 0.7.1/p21 真机轮次（2026-10-26 15:01，见 README 支持矩阵）；两轮**同一日期（2026-10-26）、不同时刻（00:19–00:30 vs 15:01）、镜像与范围不同**，不可互证。
 - **未验 amd64**：只在 arm64 拉了/跑了镜像；amd64 子清单未拉取、未运行。
 - **未验音频链路**：`ack.mode=earcon`，未渲染 TTS；KWS/VAD 模型路径未挂载，plane 只在监听态，未处理音频。
 - **未验 `read_only` / `user 1000:1000` / `network_mode: host`** 的 compose 组合（本次用 `-p` 端口映射、默认用户、可写 rootfs）。

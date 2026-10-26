@@ -86,14 +86,15 @@ docker run --rm --entrypoint rui rui-dot2:1.3.1 \
 ## 支持矩阵
 
 > 数字来自 **rui 0.7.1 / p21** 的实测（2026-10-26 15:01）；**0.7.2 未重测**，未测项一律标「未测」。
+> 与 `docs/canary-0.6.0-official-image.md` 的 **0.6.0 官方镜像 canary 轮次（2026-10-26，未接真机）** 不同轮次，数字不可互证。
 
 | 能力 | 状态 |
 |---|---|
 | 唤醒（服务端中文 KWS） | 30/30 admitted（2026-10-26，6 句 × 5 轮，校准后 TTS 音源） |
 | 语音指令 | 26/30（同上，含音乐占据扬声器的场景） |
-| 播放中打断（barge-in） | 8/8（2026-10-26，真机人声） |
+| 播放中打断（barge-in） | 8/8（2026-10-26，真机人声；**stop-push 判据**，非声学端到端） |
 | 音乐中短指令（下一首 / 停止播放） | 10/10（2026-10-26，人声，1 m） |
-| 音量控制 | 未测（`/api/v1/device/volume` 存在，未系统验证） |
+| 音量控制 | **控制端点**的 5 档 set/read 系统化验证**未验证**；回读一致性已修复，且有回归测试（m1 #4）；响度/EQ 是下一行的独立项 |
 | 指示灯 | 未测 |
 | EQ / 限幅 | 测量通过（`tools/eq_report.py`：100–300 Hz vs 1–3 kHz 由 +24.65 dB 降到 +2.11 dB、限幅 −12.85 → −2.19 dB、0 削波）；**耳测未做** |
 | 多设备并发 | 未测 |
@@ -199,14 +200,15 @@ No ffmpeg build needed (the image ships it)
 ## Support matrix
 
 > Measured on **rui 0.7.1 / p21** on 2026-10-26 15:01 (0.7.2 not re-measured). Anything untested is marked **untested**.
+> This is a different run from `docs/canary-0.6.0-official-image.md` (0.6.0 official-image canary, 2026-10-26, no real device); the numbers are not interchangeable.
 
 | Capability | Status |
 |---|---|
 | Wake (server-side Chinese KWS) | 30/30 admitted (2026-10-26, 6 phrases × 5 rounds, calibrated TTS source) |
 | Voice commands | 26/30 (same run, including music-owns-speaker cases) |
-| Barge-in during playback | 8/8 (2026-10-26, real voice) |
+| Barge-in during playback | 8/8 (2026-10-26, real voice; **stop-push criterion**, not acoustical end-to-end) |
 | Short commands during music (next / stop) | 10/10 (2026-10-26, human voice, 1 m) |
-| Volume control | untested (endpoint exists, not systematically verified) |
+| Volume control | systematic 5-step set/read of the **control endpoint** is **unverified**; read-back consistency is fixed, with a regression test (m1 #4); loudness/EQ is the separate row below |
 | LED | untested |
 | EQ / limiting | measurement passed (`tools/eq_report.py`: 100–300 Hz vs 1–3 kHz from +24.65 dB to +2.11 dB, limiting −12.85 → −2.19 dB, zero clipping); **no listening test** |
 | Concurrent multi-device | untested |
