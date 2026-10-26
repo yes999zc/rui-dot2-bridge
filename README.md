@@ -64,12 +64,13 @@ docker run --rm --entrypoint rui rui-dot2:1.3.1 \
 目标：用 Docker 跑起 rui 0.7.2 + 本插件 1.3.1（adapter id = dot2）。
 前置：docker compose version 通过；8080 空闲；5 GB 磁盘。
 1) git clone --branch main https://github.com/yes999zc/rui.git && cd rui/examples/two-speakers   # main 才有本示例；镜像仍 pin 在 0.7.2
-2) git clone --branch v1.3.1 https://github.com/yes999zc/rui-dot2-bridge.git && git clone --branch v0.2.1 https://github.com/yes999zc/rui-xiaoai-bridge.git
+2) git clone --branch v1.3.1 https://github.com/yes999zc/rui-dot2-bridge.git && git clone --branch v0.2.2 https://github.com/yes999zc/rui-xiaoai-bridge.git
 3) mkdir -p plugins && cp -r rui-dot2-bridge/src/rui_dot2_bridge plugins/   # 需要两台都接时，把另一个桥的 src 也 cp 进来
 4) 写 ./config/config.yaml（web.auth_token + devices[]，含 dot2 的 host/listen_port）
-5) export DOT2_EM_TOKEN=<设备令牌>; docker compose up -d
-6) 验收：/health 的 adapter_plugins.registered 必须含 "dot2"、devices 正确、device_errors=0
-失败看：docker compose logs --tail=80 rui 的 config error / adapter / TLS；回滚：down 后换回上一版 image tag
+5) TLS（dot2 的 tls_port 开启时必需）：把原 controller 证书放到 ./secrets/（server.pem + server.key）；没有就运行 `bash ../../scripts/make_dev_tls.sh` 自签。自签只保证平面能起，真机是否接受取决于设备信任的 CA
+6) export DOT2_EM_TOKEN=<设备令牌>; docker compose up -d
+7) 验收：/health 的 adapter_plugins.registered 必须含 "dot2"、devices 正确、device_errors=0
+失败看：docker compose logs --tail=80 rui 的 config error / adapter / TLS；回滚：down 后换回上一版 image tag；TLS 失败先移走 ./secrets/ 排查
 不需要自己编译 ffmpeg（镜像已内置）
 ```
 
@@ -178,12 +179,13 @@ Paste this:
 Goal: run rui 0.7.2 + this plug 1.3.1 (adapter id = dot2) with Docker.
 Preflight: docker compose version; port 8080 free; 5 GB disk.
 1) git clone --branch main https://github.com/yes999zc/rui.git && cd rui/examples/two-speakers   # main 才有本示例；镜像仍 pin 在 0.7.2
-2) git clone --branch v1.3.1 https://github.com/yes999zc/rui-dot2-bridge.git && git clone --branch v0.2.1 https://github.com/yes999zc/rui-xiaoai-bridge.git
+2) git clone --branch v1.3.1 https://github.com/yes999zc/rui-dot2-bridge.git && git clone --branch v0.2.2 https://github.com/yes999zc/rui-xiaoai-bridge.git
 3) mkdir -p plugins && cp -r rui-dot2-bridge/src/rui_dot2_bridge plugins/   # 需要两台都接时，把另一个桥的 src 也 cp 进来
 4) write ./config/config.yaml (web.auth_token + devices[] with host/listen_port for dot2)
-5) export DOT2_EM_TOKEN=<device token>; docker compose up -d
-6) verify: /health adapter_plugins.registered contains "dot2", devices correct, device_errors=0
-On failure: docker compose logs --tail=80 rui (config error / adapter / TLS); rollback: down and switch the image tag back
+5) TLS (required when dot2's tls_port is on): put the original controller cert into ./secrets/ (server.pem + server.key); if you do not have it, run `bash ../../scripts/make_dev_tls.sh`. Self-signed only proves the plane starts; the device's trusted CA decides acceptance
+6) export DOT2_EM_TOKEN=<device token>; docker compose up -d
+7) verify: /health adapter_plugins.registered contains "dot2", devices correct, device_errors=0
+On failure: docker compose logs --tail=80 rui (config error / adapter / TLS); rollback: down and switch the image tag back; for TLS failures move ./secrets/ away first
 No ffmpeg build needed (the image ships it)
 ```
 
