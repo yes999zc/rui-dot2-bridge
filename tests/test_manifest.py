@@ -38,7 +38,8 @@ class ManifestLayoutTest(unittest.TestCase):
         # real requirement (0.6.0+) instead of letting an old core through to a
         # confusing "extra inputs are not permitted" error.
         self.assertEqual(plugin["version"], "1.2.0")
-        self.assertEqual(plugin["rui_compat"], ">=0.6.0 <0.7.0")
+        # The ceiling tracks the 0.7.x line: a rui minor bump must not refuse the plug.
+        self.assertEqual(plugin["rui_compat"], ">=0.6.0 <0.8.0")
         self.assertEqual(plugin["devices"], ["devices/rs03qr.yaml"])
 
     def test_device_yaml_fields(self) -> None:

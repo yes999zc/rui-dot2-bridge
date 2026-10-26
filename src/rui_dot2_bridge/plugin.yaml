@@ -2,7 +2,10 @@ schema: rui-plugin/v0
 id: dot2-echomuse
 name: "Echo Dot 2 (EchoMuse) plug"
 version: 1.2.0
-rui_compat: ">=0.6.0 <0.7.0"
+# 0.7 release: the ceiling tracks the current minor line, not a single release, so a
+# rui minor bump does not make the loader refuse this plug (loader.py refuses
+# out-of-range manifests, which would leave every Dot 2 without an adapter).
+rui_compat: ">=0.6.0 <0.8.0"
 license: MIT
 maintainer: "Bakey Zhang"
 homepage: "https://github.com/yes999zc/rui-dot2-bridge"
