@@ -5,7 +5,6 @@
 **把 Echo Dot 2（RS03QR）接到 [rui](https://github.com/yes999zc/rui) 的语音卫星桥。**
 不改 rui 核心：一个 out-of-tree 插件 + 一层下游镜像；设备侧 AEC 归设备，服务端只做决策。
 
-[![CI](https://github.com/yes999zc/rui-dot2-bridge/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/yes999zc/rui-dot2-bridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/yes999zc/rui-dot2-bridge?style=flat-square)](LICENSE)
 [![rui](https://img.shields.io/badge/rui-%3E%3D0.6.0%20%3C0.8.0-2f6f6a)](https://github.com/yes999zc/rui)
 [![plugin](https://img.shields.io/badge/plugin-1.3.1-b4744a)](src/rui_dot2_bridge/plugin.yaml)
@@ -28,7 +27,7 @@ rui 起一个音频平面 → 插件连上设备（wss 控制通道 + 双向音�
 
 ![architecture](docs/assets/architecture.png)
 
-源文件：[`docs/assets/architecture.mmd`](docs/assets/architecture.mmd)；导出物 [`architecture.svg`](docs/assets/architecture.svg) / [`architecture.png`](docs/assets/architecture.png)。
+源文件：[`docs/assets/architecture.mmd`](docs/assets/architecture.mmd)；导出物 [`architecture.svg`](docs/assets/architecture.svg) / [`architecture.png`](docs/assets/architecture.png)。桥仓没有独立界面，hero 即这张架构图。
 
 | 层 | 在这个仓库里的东西 | 说明 |
 |---|---|---|
@@ -50,7 +49,9 @@ rui 起一个音频平面 → 插件连上设备（wss 控制通道 + 双向音�
 git clone --branch v1.3.1 https://github.com/yes999zc/rui-dot2-bridge.git && cd rui-dot2-bridge
 docker build -f deploy/downstream/Dockerfile \
   --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.7.2 -t rui-dot2:1.3.1 .
-docker run --rm --entrypoint rui rui-dot2:1.3.1 plug-test   # 契约自测
+docker run --rm --entrypoint rui rui-dot2:1.3.1 \
+  plug-test /opt/rui-plugins/rui_dot2_bridge \
+  --adapter rui_dot2_bridge.adapter:build   # 契约自测（directory 必填）
 ```
 
 生产里用 Compose 起：把镜像换成 `rui-dot2:1.3.1`，并按设备设置 `DOT2_HOST` / `DOT2_LISTEN_PORT` / `DOT2_EM_TOKEN`（模板见 `deploy/`）。
@@ -67,7 +68,7 @@ docker run --rm --entrypoint rui rui-dot2:1.3.1 plug-test   # 契约自测
 
 ## 支持矩阵
 
-> 数字来自 2026-10-26 在 rui 0.7.2 上的实测；**未测项一律标「未测」**。
+> 数字来自 **rui 0.7.1 / p21** 的实测（2026-10-26 15:01）；**0.7.2 未重测**，未测项一律标「未测」。
 
 | 能力 | 状态 |
 |---|---|
@@ -122,7 +123,7 @@ rui starts an audio plane → the plug links to the device (wss control + duplex
 
 ![architecture](docs/assets/architecture.png)
 
-Source: [`docs/assets/architecture.mmd`](docs/assets/architecture.mmd); exports [`architecture.svg`](docs/assets/architecture.svg) / [`architecture.png`](docs/assets/architecture.png).
+Source: [`docs/assets/architecture.mmd`](docs/assets/architecture.mmd); exports [`architecture.svg`](docs/assets/architecture.svg) / [`architecture.png`](docs/assets/architecture.png). A bridge has no UI of its own, so this diagram is the hero.
 
 | Layer | What lives here | Notes |
 |---|---|---|
@@ -144,7 +145,9 @@ Source: [`docs/assets/architecture.mmd`](docs/assets/architecture.mmd); exports 
 git clone --branch v1.3.1 https://github.com/yes999zc/rui-dot2-bridge.git && cd rui-dot2-bridge
 docker build -f deploy/downstream/Dockerfile \
   --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.7.2 -t rui-dot2:1.3.1 .
-docker run --rm --entrypoint rui rui-dot2:1.3.1 plug-test   # contract self-test
+docker run --rm --entrypoint rui rui-dot2:1.3.1 \
+  plug-test /opt/rui-plugins/rui_dot2_bridge \
+  --adapter rui_dot2_bridge.adapter:build   # contract self-test (directory required)
 ```
 
 In production, run it with Compose: swap the image to `rui-dot2:1.3.1` and set `DOT2_HOST` / `DOT2_LISTEN_PORT` / `DOT2_EM_TOKEN` per device (templates under `deploy/`).
@@ -161,7 +164,7 @@ In production, run it with Compose: swap the image to `rui-dot2:1.3.1` and set `
 
 ## Support matrix
 
-> Measured on rui 0.7.2 on 2026-10-26. Anything untested is marked **untested**.
+> Measured on **rui 0.7.1 / p21** on 2026-10-26 15:01 (0.7.2 not re-measured). Anything untested is marked **untested**.
 
 | Capability | Status |
 |---|---|

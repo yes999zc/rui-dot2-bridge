@@ -1,34 +1,30 @@
 %% rui-dot2-bridge — where this plug sits (source for docs/assets/architecture.svg / .png)
 %% palette: ink #1f2a2e, teal #2f6f6a, sand #e8e2d6, accent #b4744a
+%%{init: {'themeVariables': {'fontSize': '16px', 'fontFamily': 'Helvetica Neue, Arial, sans-serif'}, 'flowchart': {'htmlLabels': false, 'curve': 'basis', 'nodeSpacing': 40, 'rankSpacing': 70}}}%%
 flowchart LR
-  classDef svc fill:#e8e2d6,stroke:#2f6f6a,stroke-width:1.5px,color:#1f2a2e
-  classDef plug fill:#f4efe6,stroke:#b4744a,stroke-width:1.5px,color:#1f2a2e
-  classDef dev fill:#ffffff,stroke:#1f2a2e,stroke-width:1.5px,color:#1f2a2e
+  classDef svc fill:#e8e2d6,stroke:#2f6f6a,stroke-width:2px,color:#1f2a2e
+  classDef plug fill:#f4efe6,stroke:#b4744a,stroke-width:2px,color:#1f2a2e
+  classDef dev fill:#ffffff,stroke:#1f2a2e,stroke-width:2px,color:#1f2a2e
 
-  subgraph R["rui core · unchanged"]
+  subgraph R["1 · rui core"]
     direction TB
-    C["session / turn<br/>providers · arbiter"]:::svc
-    G["audio gate<br/>VAD · preroll · echo excision"]:::svc
+    C["Session / turn"]:::svc
+    G["Audio gate"]:::svc
   end
 
-  subgraph P["rui-dot2-bridge · this repo"]
+  subgraph P["2 · this bridge"]
     direction TB
-    L["device_link<br/>wss control channel"]:::plug
-    A["adapter<br/>rui-device/v1 build()"]:::plug
-    D["dsp / eq<br/>loudness target"]:::plug
+    A["adapter<br/>rui-device/v1"]:::plug
+    L["device link<br/>wss control"]:::plug
+    D["dsp / EQ"]:::plug
   end
 
-  subgraph H["Echo Dot 2 · RS03QR"]
+  subgraph H["3 · Echo Dot 2"]
     direction TB
-    M["mic array + hardware AEC"]:::dev
-    S["speaker + LED"]:::dev
+    M["mic array<br/>hardware AEC"]:::dev
+    S["speaker · LED"]:::dev
   end
 
-  A -->|"wake candidate, utterances"| G
-  G -->|"play pcm, stop, volume"| A
-  C --- A
-  A --- L
-  A --- D
-  L <-->|"audio + events"| M
-  L --->|"playback"| S
-  D -.->|"EQ applied to playback"| L
+  R -->|"play · stop · volume"| P
+  P -->|"wake · utterance"| R
+  P <-->|"audio + events"| H
