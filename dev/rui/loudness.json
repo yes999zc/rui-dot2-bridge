@@ -3,12 +3,13 @@
   "mode": "stock",
   "trim_db": -2.0,
   "curve_ladder": true,
+  "ladder_correct": true,
   "limiter_ceiling_db": -1.0,
   "limiter_lookahead_ms": 5.0,
   "limiter_release_ms": 80.0,
   "lowcut_hz": 250.0,
-  "lowcut_db": 6.0,
+  "lowcut_db": 0.0,
   "highshelf_hz": 4000.0,
-  "highshelf_db": 2.0,
+  "highshelf_db": 0.0,
   "bands": []
 }
