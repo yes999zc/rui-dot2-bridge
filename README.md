@@ -2,232 +2,200 @@
 
 # rui-dot2-bridge
 
-**把已解锁的 Echo Dot 2（EchoMuse 固件）变成 [rui](https://github.com/yes999zc/rui) 的语音卫星。**
-不改 rui 源码：一个 out-of-tree adapter + 一个 Docker 下游镜像，设备侧 AEC 归设备。
+**把 Echo Dot 2（RS03QR）接到 [rui](https://github.com/yes999zc/rui) 的语音卫星桥。**
+不改 rui 核心：一个 out-of-tree 插件 + 一层下游镜像；设备侧 AEC 归设备，服务端只做决策。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![rui](https://img.shields.io/badge/rui-0.3.4%20→%200.6.0-blue)](https://github.com/yes999zc/rui)
-[![Device](https://img.shields.io/badge/device-Echo%20Dot%202%20RS03QR-8A2BE2)](#前提条件)
-[![Contract tests](https://img.shields.io/badge/plug--test-15%20PASS%20%2F%200%20FAIL-brightgreen)](docs/contract-report-0.6.0.json)
+[![CI](https://github.com/yes999zc/rui-dot2-bridge/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/yes999zc/rui-dot2-bridge/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/yes999zc/rui-dot2-bridge?style=flat-square)](LICENSE)
+[![rui](https://img.shields.io/badge/rui-%3E%3D0.6.0%20%3C0.8.0-2f6f6a)](https://github.com/yes999zc/rui)
+[![plugin](https://img.shields.io/badge/plugin-1.3.1-b4744a)](src/rui_dot2_bridge/plugin.yaml)
 
 </div>
 
 ---
 
-> **状态**：rui 0.5.1 上通过干净安装复测；rui **0.5.2** 上完成真机升级验证（`/devices/{id}/test` → `ok:true`，`/status` → `ready:true`，真实回合 `playback_gap_count=0`）。
-> 插件 **1.2.0** 面向 rui **0.6.0**：在候选镜像 `ghcr.io/yes999zc/rui:sha-7d1c1f8`（main @ `7d1c1f8`）上 `plug-test` **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**（镜像 tag/digest 见 [docs/contract-report-0.6.0.json](docs/contract-report-0.6.0.json)）。
-> 插件 **1.1.3** 起在 adapter 侧内置播放门控：**播放期间静音上行麦克风 + 播放后 2500 ms 静音**，barge 仍走设备唤醒事件（见[播放门控](#播放门控插件-113)）。
-> 上游契约自测 0.3.4 / 0.4.0 / 0.4.1 / 0.4.2 / 0.5.0 / 0.5.1 / 0.5.2 / 0.6.0（候选）均为 **15 PASS / 0 FAIL / 2 WARN / 5 SKIP**。
+# 中文
 
-## 🤖 如果你想让 agent 帮你安装（推荐）
+## 15 秒了解
 
-本项目从设计上就是"交给 agent 装"的：安装步骤已经写成给 AI agent 的指令。你只需要把下面这段**整段复制粘贴**
-给你的 coding agent（Claude Code / Codex / DeepSeek 等，需要能执行 shell 和 Docker 命令），它会自己阅读仓库文档、
-核对前提条件、逐步部署并汇报。
+Echo Dot 2 保留它自己的麦克风阵列、硬件 AEC 和喇叭；唤醒、对话、播放都由你的 rui 服务决定。这个仓库提供两样东西：一个遵循 `rui-device/v1`（Socket & Plug v1）契约的**插件**，以及一层**下游 Docker 镜像**（`FROM rui:<version>` + 插件），核心不需要 fork。
 
 ```text
-请把 https://github.com/yes999zc/rui-dot2-bridge 部署成 rui 的语音卫星（Echo Dot 2 + EchoMuse 固件）。
-
-1. 先完整阅读仓库里的 README.md、docs/agent-install.md、docs/clean-install-0.5.0.md，
-   再开始动手；不要凭记忆安装。
-2. 按 docs/agent-install.md 的检查清单核对前提条件（设备已解锁并刷好 EchoMuse、rui 0.6.0+
-   已运行、Docker 宿主可用、8080/8870 端口等）；缺什么先列出来问我，不要猜。
-3. 严格按文档步骤执行：构建/切换下游镜像 → 安装 plug manifest → 写 .env/config 参数 →
-   POST /api/v1/setup/device 添加设备 → 跑验收清单。任何一步失败先停下来把日志发给我。
-4. 安全规则：修改前备份 config/.env；不要把任何 token/证书打印到聊天或日志；只改本仓库和
-   部署目录；不要碰其它服务或生产主机；不要修改 rui 源码。
-5. 完成后给我：每一步的命令与结果、/health 与 /device status 关键字段、验收清单勾选，
-   以及"还缺什么 / 没做到什么"。
+rui 起一个音频平面 → 插件连上设备（wss 控制通道 + 双向音频）→ 说「你好小瑞」→ rui 决定这一轮 → 插件播报/报灯/停播
 ```
 
-更细的 agent 指令（检查清单、失败处理、验收命令）在 [docs/agent-install.md](docs/agent-install.md)。
+## 架构
 
-## 它是什么
+![architecture](docs/assets/architecture.png)
 
-```
-Echo Dot 2 (EchoMuse 固件) ──wss:8870 + X-EM-Token──▶ rui-dot2-bridge
-                                                        （rui 音频面内的 out-of-tree adapter）
-                                                         │ AudioFrame 16 kHz mono，ref_channels=0
-                                                         ▼
-                                                    rui 控制面 ──▶ ASR / LLM / TTS ──▶ 设备喇叭
-```
+源文件：[`docs/assets/architecture.mmd`](docs/assets/architecture.mmd)；导出物 [`architecture.svg`](docs/assets/architecture.svg) / [`architecture.png`](docs/assets/architecture.png)。
 
-- **不改 rui 源码**：以官方 `RUI_ADAPTER_PLUGINS` + `rui-device/v1` manifest 接入；rui 升级只需抬
-  `rui_compat`（插件 1.2.0 为 `>=0.6.0 <0.7.0`：manifest 的 `audio_defaults` 是 rui 0.6 字段）。
-- **设备只做 I/O 和它自己的 AEC**：`ref_channels=0`，rui 侧 AEC 关闭；adapter 负责 TLS/帧协议/音量/响度/播放收尾。
-- **播放期静音上行（1.1.3+）**：播放期间静音麦克风、播放后保持 2500 ms 静音，堵住 rui
-  `vad.hold()` 的 buffer-and-replay 自听；打断靠设备唤醒事件（`barge_via_device`），不靠麦克风。
-- **manifest 声明硬件音频默认（1.2.0+ / rui 0.6+）**：`devices/rs03qr.yaml` 的 `audio_defaults` 声明
-  16 kHz/1ch/0ref/S16 采集、48 kHz/1ch 播放与 `ack_echo_ignore_ms: 2500`，成为三层合并的最底层，
-  不再依赖部署侧手写这些值（见[音频默认](#音频默认插件-120-rui-06)）。
-- **一切 Docker**：官方镜像 + `deploy/downstream/Dockerfile` 构建下游镜像（adapter 层），host 网络跑在 NAS 上。
-- **契约优先**：每个 rui 版本都跑官方 `plug-test`，报告在 `docs/contract-report-*.json`。
-- **无私有依赖**：MIT；不包含、也不分发任何 Amazon 专有固件或密钥。
-
-## 前提条件
-
-| 类别 | 要求 | 说明 |
+| 层 | 在这个仓库里的东西 | 说明 |
 |---|---|---|
-| 设备 | **Echo Dot 2（第 2 代，型号 RS03QR）** + USB 线 | 只有这个型号支持本项目；解锁需要打开设备 |
-| 解锁 | 用 **[firebreak](https://github.com/yes999zc/firebreak)** 把它从 Amazon 固件解锁（基于 amonet） | 有变砖风险，按 firebreak 文档操作；解锁后可回 stock |
-| 固件 | **[EchoMuse](https://github.com/wilbowes/EchoMuse)**（第三方开源固件，MIT）**v2.19.0-ea.1 或更新**，装进 `server_b` 槽 | A/B 双槽 + 自动回滚，`server_a` 保留原厂固件可回退 |
-| 可选补丁 | **[echomuse-dot2-ref](https://github.com/yes999zc/echomuse-dot2-ref)**：上行加 2ch（beam + 去混叠播放参考） | 只在你想让 **rui 侧**做 AEC 时需要；默认 AEC 归设备，不需要 |
-| 控制器 | **[rui](https://github.com/yes999zc/rui) ≥ 0.6.0**，跑在同一局域网的 Docker 宿主（NAS / x86_64） | 需要 8080（控制台）、8870（设备 wss）、8872（响度，仅 loopback） |
-| 设备凭据 | EchoMuse 的 TLS 材料（`ca.pem` / `server.pem` / `server.key`）+ `X-EM-Token` | 配对时生成；放部署目录 `dot2-secrets/`（0600，绝不进 git） |
-| 网络 | 设备与 rui 宿主同一局域网，设备能访问宿主 **8870** | 设备通过 `controller.json` 静态指向宿主 |
-| 宿主 | Docker Compose v2；x86_64 | 8C / 6G 级别足够，不需要 GPU |
+| **rui 核心（不改）** | 会话/回合、供应商、唤醒仲裁、音频门限 | 用官方镜像，不补丁、不 fork |
+| **本仓库（插件 + 下游镜像）** | `adapter`（`build()` 入口）、`device_link`（wss 控制通道）、`dsp`（EQ/限幅） | 插件清单声明 `rui_compat`，越界时核心会拒载 |
+| **设备** | Echo Dot 2 / RS03QR：麦克风阵列、硬件 AEC、喇叭、LED | 设备侧音频参数通过控制通道下发 |
 
-> ⚠️ 解锁/刷机会改动设备分区，**风险自负**。请先读完 [firebreak](https://github.com/yes999zc/firebreak) 与
-> [EchoMuse](https://github.com/wilbowes/EchoMuse) 的文档，并保留回滚路径（原厂槽 `server_a`）。
+## 特性
 
-## 刷机流程（摘要）
+- **不改核心**：插件通过 `rui-device/v1` 契约接入；rui 升级到下一个次版本不会让插件失效（兼容窗口 `>=0.6.0 <0.8.0`）。
+- **双向音频**：上行麦克风、下行播放分开走；播放/停止/音量/指示灯都是独立命令。
+- **播放期门控**：`DOT2_PLAYBACK_GATE_MS` 控制「播放时静音上行」的时长（`0` = 交给设备 AEC，配合服务端中文 KWS 时可实现播放中打断）。
+- **EQ 与限幅**：`dsp.py` 按房间响度目标做低切与高频搁架，并保证不削波（目标值可用 `/loudness` 复核）。
+- **可观测**：`plug-test` 跑契约自测；设备状态、重连、丢包都进 rui 的日志与轨迹。
 
-完整步骤以上游项目文档为准，这里给顺序和容易踩的点：
-
-1. **解锁**：按 [firebreak](https://github.com/yes999zc/firebreak) 把 Echo Dot 2 从 Amazon 固件切到可 root 的
-   amonet 环境（USB 连接，过程中会重启几次）。
-2. **装 EchoMuse 固件**：按 [EchoMuse](https://github.com/wilbowes/EchoMuse) 的设备安装说明，把 `server_b` 槽换成
-   EchoMuse 的 `server` 二进制（A/B 双槽；`server_a` 保留原厂固件）。
-3. **（可选）2ch 参考补丁**：如果你想让 rui 侧做 AEC，用
-   [echomuse-dot2-ref](https://github.com/yes999zc/echomuse-dot2-ref) 的 `scripts/build.sh` + `scripts/install.sh`
-   装到空闲槽；`scripts/rollback.sh` 秒级回滚。默认路线（设备 AEC）**不需要**这步。
-4. **让设备指向 rui 宿主**：在设备上写 `controller.json`：
-   `{"endpoints":[{"host":"<rui-host>","port":8867,"tls_port":8870}],"mdns":false}`。
-   EchoMuse 也支持 mDNS 自动发现，静态写法更稳。
-5. **回滚**：把 `server` 符号链接切回 `server_a`（原厂槽）即可；EchoMuse 的 `start_server.sh` 在连续快速崩溃时
-   也会自动回滚。
-
-## 安装（手动，Docker）
+## 三行启动
 
 ```bash
-# 1. 取代码
-git clone https://github.com/yes999zc/rui-dot2-bridge.git
-cd rui-dot2-bridge
-
-# 2. 在 x86_64 宿主上构建下游镜像（官方 rui + adapter 层）
-DOCKER_BUILDKIT=0 docker build -f deploy/downstream/Dockerfile \
-  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.6.0 -t rui-dot2:0.6.0 .
-
-# 3. 部署目录（示例 ~/rui）：compose + config + data + dot2-secrets
-#    参考 deploy/downstream/docker-compose.yml；dot2-secrets/ 放部署目录（0600）
-
-# 4. 安装 plug manifest（镜像内一份 + data/plugs 一份）
-sh deploy/downstream/install-plug-manifest.sh ~/rui/data
-
-# 5. .env 关键项（完整示例见 deploy/downstream/README.md）
-#    RUI_IMAGE=rui-dot2:0.6.0
-#    DOT2_SECRETS_DIR=/opt/rui-secrets
-#    DOT2_EQ_DIR=/opt/rui-secrets/eq        # 从设备拉出的 EQ_*.cfg（响度曲线）
-#    DOT2_VOLUME_CAP=100
-
-# 6. 起容器
-cd ~/rui && docker compose up -d
-
-# 7. 用官方 API 添加设备（不要手搓 config.yaml 的 devices 段）
-curl -sS -X POST http://127.0.0.1:8080/api/v1/setup/device \
-  -H "X-Auth-Token: $(docker compose exec -T rui rui token)" \
-  -H 'Content-Type: application/json' \
-  -d '{"id":"dot2","adapter":"dot2","host":"<rui-host>","room":"客厅","volume":100}'
+git clone --branch v1.3.1 https://github.com/yes999zc/rui-dot2-bridge.git && cd rui-dot2-bridge
+docker build -f deploy/downstream/Dockerfile \
+  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.7.2 -t rui-dot2:1.3.1 .
+docker run --rm --entrypoint rui rui-dot2:1.3.1 plug-test   # 契约自测
 ```
 
-### 音频默认（插件 1.2.0+ / rui 0.6+）
+生产里用 Compose 起：把镜像换成 `rui-dot2:1.3.1`，并按设备设置 `DOT2_HOST` / `DOT2_LISTEN_PORT` / `DOT2_EM_TOKEN`（模板见 `deploy/`）。
 
-rui 0.6 起音频参数按三层合并：**设备 manifest `audio_defaults`（最底层）< 全局 `config.yaml` 的
-`audio`/`ack`（显式写下的字段）< `devices[].audio`（单台设备覆盖）**。插件 1.2.0 在
-`devices/rs03qr.yaml` 里直接声明 Dot 2 的硬件默认：
+## 兼容性与前置条件
 
-```yaml
-audio_defaults:
-  capture: {rate: 16000, channels: 1, mic_channels: 1, ref_channels: 0, bits: 16}
-  playback: {rate: 48000, channels: 1}
-  ack_echo_ignore_ms: 2500
-```
+- `rui` **>=0.6.0 <0.8.0**（本版面向 0.7.2 验证）；Python **3.11+**（下游镜像已内置）。
+- **设备前置条件**（第三方设备，与厂商**无官方关联**）：
+  - Echo Dot 2（RS03QR），固件需已具备设备本地接口并能与 rui 主机互通；
+  - 设备与本服务在**同一局域网**；`DOT2_HOST` / 端口 / 设备令牌由你提供；
+  - 本项目只提供软件侧的桥接层；设备固件、网络与令牌的准备由你按厂商与设备的既有能力完成（见上两条前置条件）。
+- 中文唤醒词：走 rui 服务端 KWS（中文）；设备端 OWW 目前只用于英文模型，`DOT2_OWW_ON_DEVICE=off` 时完全关闭。
+- 播放音乐需要 rui 侧配置音乐源（如 Navidrome）。
 
-因此新部署**不需要**再手写 `audio.capture`/`audio.playback`/`devices[].audio.voice.ack_echo_ignore_ms`
-就能拿到正确值；显式写下的配置仍然优先。**注意**：`audio_defaults` 是 rui-device/v1 的 0.6 字段，
-rui 0.5.x 的 loader 会以 "Extra inputs are not permitted" 拒绝含该字段的 manifest——插件 1.2.0 需要
-**rui 0.6.0+**；仍跑 0.5.x 的部署请继续用插件 1.1.3 + 部署侧配置。
+## 支持矩阵
 
-### 播放门控（插件 1.1.3+）
+> 数字来自 2026-10-26 在 rui 0.7.2 上的实测；**未测项一律标「未测」**。
 
-播放期间设备麦克风会听到自己的喇叭；rui 的 `vad.hold()` 又会把 ack/回声窗口内的音频**缓冲并在窗口
-放行后重放**，于是 cue 的回声会被当成用户请求（"自听"）。rui 0.5.3 的
-`devices[].audio.voice.ack_echo_ignore_ms` 只改变窗口长度，无法消除回放，所以插件 1.1.3 直接在
-adapter 侧静音上行。rui 0.6 起插件 manifest 的 `audio_defaults.ack_echo_ignore_ms: 2500` 已经提供
-窗口默认值，部署侧不必再手写；0.5.x 部署仍可用 `devices[].audio.voice.ack_echo_ignore_ms`：
-
-| 变量 | 默认 | 作用 |
-|---|---|---|
-| `DOT2_PLAYBACK_GATE_MS` | `2500` | 播放结束（最后一块）后继续静音麦克风的时间；`0` 关闭播放后静音 |
-| `DOT2_PLAYBACK_LIVE_MS` | `0` | 播放结束后保持麦克风开启的时间；`0` = 播放期立即静音（推荐，1.1.3 默认） |
-| `DOT2_PLAYBACK_DUMP` | 未设置 | 调试：把下发设备前的 PCM 落到该目录 |
-
-一次回复的时序：第一块 `play()` 起麦克风静音 → 整段播放 + 设备缓冲排空期间保持静音 → 最后一块后
-**2500 ms** 解除。**打断不受影响**：设备唤醒事件带 `barge` 标志（`barge_via_device`），
-`stop_playback()` 会立即解除门控。把 `DOT2_PLAYBACK_LIVE_MS` 设为 >0 会恢复 1.1.2 的旧行为，
-使回声重新进入 rui 的 hold 缓冲，仅作诊断，不建议生产使用。参考通道（`ref_channels>0`）只静音
-麦克风通道，参考通道原样透传。
-
-### 验收清单
-
-| 项 | 判据 |
+| 能力 | 状态 |
 |---|---|
-| 契约 | `plug-test`（命令见下）→ **0 FAIL** |
-| 健康 | `/health` → `devices=1`、`audio_plane=true`、`speaker_connected=true`、`adapter_plugins.registered=["dot2"]` |
-| 端口 | `8080`、`8870` 在听（`8872` 仅 loopback） |
-| 设备 | 日志 `dot2 link: dot2 registered`；`/api/v1/devices/dot2/status` → `listen_port=8870` |
-| 播放 | `/debug/say` 一条长回复：`playback_gap_count=0`、`max_gap=0`；长回复后无伪造 turn |
-| 恢复 | `docker compose restart` 后 ≤60 s 设备重连 |
+| 唤醒（服务端中文 KWS） | 30/30 admitted（2026-10-26，6 句 × 5 轮，校准后 TTS 音源） |
+| 语音指令 | 26/30（同上，含音乐占据扬声器的场景） |
+| 播放中打断（barge-in） | 8/8（2026-10-26，真机人声） |
+| 音乐中短指令（下一首 / 停止播放） | 10/10（2026-10-26，人声，1 m） |
+| 音量控制 | 未测（`/api/v1/device/volume` 存在，未系统验证） |
+| 指示灯 | 未测 |
+| EQ / 限幅 | 测量通过（`tools/eq_report.py`：100–300 Hz vs 1–3 kHz 由 +24.65 dB 降到 +2.11 dB、限幅 −12.85 → −2.19 dB、0 削波）；**耳测未做** |
+| 多设备并发 | 未测 |
 
-```bash
-docker run --rm --entrypoint python -e PYTHONPATH=/opt/rui-plugins \
-  -v "$PWD/src:/opt/rui-plugins:ro" ghcr.io/yes999zc/rui:0.6.0 \
-  -m rui plug-test /opt/rui-plugins/rui_dot2_bridge \
-  --adapter rui_dot2_bridge.adapter:build --json
-```
+## 故障排查
+
+| 现象 | 原因 | 处置 |
+|---|---|---|
+| 插件没被加载 | `rui_compat` 越界或 `plugin.yaml` 不在模块目录 | 看 rui 启动日志里的 manifest 报错；确认 rui 版本在窗口内 |
+| 设备连不上 | `DOT2_HOST` / 端口 / 令牌错，或设备不在同一网段 | 先 `rui plug-test`，再看 `device_link` 的重连日志 |
+| 播放时喊不醒 | `DOT2_PLAYBACK_GATE_MS` 让上行被静音 | 调小或设 `0`（由设备 AEC 负责），再用中文 KWS 验证打断 |
+| 加第二台设备后第一台失效 | `DOT2_CONTROL_PORT` 是**全局**环境变量 | 清掉它，改为按设备分配 `DOT2_LISTEN_PORT` |
+| 声音发闷/发尖 | EQ 目标与房间不匹配 | 重跑 `tools/eq_report.py` 拿测量值，再调 `DOT2_LOUDNESS_*` / `DOT2_EQ_DIR` |
+| 中文唤醒词没反应 | 打开了设备端 OWW 但只有英文模型 | 设 `DOT2_OWW_ON_DEVICE=off`，用服务端中文 KWS |
 
 ## 已知限制
 
-- **唤醒词走 rui KWS**（当前配置为中文「你好小瑞」）：设备端 OWW 运行时/模型不随固件分发，中文 OWW 需要自己训
-  （[openWakeWord](https://github.com/dscripka/openWakeWord) / EchoMuse `oww_forge`），本项目暂不包含。
-- **单设备 / 单音频面**：rui 0.5 的 `multi_device` 默认关闭；多卫星/多房间仲裁在 rui 后续版本。
-- **AEC 归设备**（`ref_channels=0`）：想让 rui 侧做 AEC 时，用上面提到的 2ch 参考补丁。
-- 播放门控由插件自带（1.1.3+）：播放期静音上行 + 播放后 2500 ms（见[播放门控](#播放门控插件-113)）；
-  rui 0.6+ 的 `ack_echo_ignore_ms=2500` 由 manifest `audio_defaults` 声明，rui 侧的
-  `devices[].audio.voice.post_playback_mute_ms` 仍可叠加使用，但不再是必需。
-- 插件 1.2.0 的 manifest 带 v1-only 的 `audio_defaults`，**rui 0.5.x 会拒绝加载**（需 0.6.0+）。
-- 上游 rui 的已知小问题（如设备已连接但 status 显示 `ready=false/token_missing`）见 [rui#7](https://github.com/yes999zc/rui/issues/7)。
-
-## 文档
-
-| 文档 | 内容 |
-|---|---|
-| [docs/agent-install.md](docs/agent-install.md) | **给 agent 的安装指令**（推荐入口） |
-| [deploy/downstream/](deploy/downstream/) | 下游镜像、compose、manifest 安装脚本 |
-| [docs/clean-install-0.5.0.md](docs/clean-install-0.5.0.md) | 0.5.0 干净安装手册（含回滚） |
-| [docs/clean-install-0.5.0-result.md](docs/clean-install-0.5.0-result.md) | 0.5.0 干净安装 + 验收记录 |
-| [docs/contract-report-0.6.0.json](docs/contract-report-0.6.0.json) | 官方 plug-test 报告（插件 1.2.0 / rui 0.6.0） |
-| [docs/contract-report-0.5.2.json](docs/contract-report-0.5.2.json) | 官方 plug-test 报告（同目录有 0.3.4 / 0.4.x / 0.5.0 / 0.5.1） |
-| [docs/oww-route-b-status.md](docs/oww-route-b-status.md) | 设备端唤醒（OWW）现状与路线 |
-| [docs/real-machine-round-1.md](docs/real-machine-round-1.md) | 真机验收第 1 轮记录 |
-| [docs/protocol-map.md](docs/protocol-map.md) | EchoMuse 设备协议 ↔ rui AudioFrame 映射 |
+- 设备端 OWW 只验证过英文模型；中文唤醒词依赖 rui 服务端 KWS。
+- EQ 只有测量结论，**没有**人工耳测结论；不同房间仍需现场调。
+- 播放与拾音的共存依赖设备 AEC；设备固件不同，打断延迟可能在数百毫秒量级。
+- 多台 Dot2 并发、音量与指示灯的系统性验证未做。
 
 ## 致谢
 
-本项目站在这些项目/社区的肩膀上，真心感谢：
+契约 `rui-device/v1` 与 `plug-test` 工具来自 [rui](https://github.com/yes999zc/rui)；音频参数化思路参考了公开的设备音频调试实践（见 `docs/aec-*.md`）。
 
-- **[@wilbowes/EchoMuse](https://github.com/wilbowes/EchoMuse)** — 设备侧开源固件（MIT）。没有它，Echo Dot 2 仍然是
-  一台锁死的 Amazon 设备；本项目的帧协议、A/B 槽、TLS 材料约定全部沿用它的设计与文档。
-- **[amonet](https://github.com/amonet/everything)** 与 **[@yes999zc/firebreak](https://github.com/yes999zc/firebreak)** —
-  解锁/刷机工具链，让设备可以跑第三方固件。
-- **[rui（小瑞）](https://github.com/yes999zc/rui)** — 控制器 / 音频面 / 插件契约的上游；本项目 adapter 完全按它的
-  `Socket & Plug v1` 契约实现，未改其源码。
-- **[openWakeWord](https://github.com/dscripka/openWakeWord)** — 未来设备端唤醒（OWW）的模型与训练工具链。
-- 示例配置里用到的 **讯飞 TTS**、**DeepSeek LLM** 等第三方服务，仅作默认示例，与它们无隶属关系。
+## License
 
-> Amazon Echo、Echo Dot 是 Amazon.com, Inc. 的商标；本项目与 Amazon 无关联，也未获其背书。
-> 本项目不包含、也不分发任何 Amazon 专有固件或密钥。
+[MIT](LICENSE)。
 
-## 许可证
+---
 
-[MIT](LICENSE)。随附的第三方组件（EchoMuse、rui 等）各自遵循其原许可证。
+# English
+
+## In 15 seconds
+
+The Echo Dot 2 keeps its own microphone array, hardware AEC and speaker; wakes, dialogue and playback are decided by your rui server. This repository ships two things: a **plug** implementing the `rui-device/v1` (Socket & Plug v1) contract, and a **downstream Docker layer** (`FROM rui:<version>` + the plug), so the core is never forked.
+
+```text
+rui starts an audio plane → the plug links to the device (wss control + duplex audio) → "Hey Rui" → rui decides the turn → the plug speaks / lights / stops
+```
+
+## Architecture
+
+![architecture](docs/assets/architecture.png)
+
+Source: [`docs/assets/architecture.mmd`](docs/assets/architecture.mmd); exports [`architecture.svg`](docs/assets/architecture.svg) / [`architecture.png`](docs/assets/architecture.png).
+
+| Layer | What lives here | Notes |
+|---|---|---|
+| **rui core (unchanged)** | Sessions/turns, providers, wake arbitration, audio gate | Official image, no patches, no fork |
+| **This repo (plug + downstream image)** | `adapter` (`build()` entry), `device_link` (wss control), `dsp` (EQ/limiter) | The manifest declares `rui_compat`; out-of-range versions are refused by the loader |
+| **Device** | Echo Dot 2 / RS03QR: mic array, hardware AEC, speaker, LED | Device audio parameters are pushed over the control channel |
+
+## Features
+
+- **No core changes**: the plug speaks `rui-device/v1`; a rui minor bump will not break it (window `>=0.6.0 <0.8.0`).
+- **Duplex audio**: microphone uplink and playback downlink are separate; play/stop/volume/LED are individual commands.
+- **Playback gate**: `DOT2_PLAYBACK_GATE_MS` sets how long the uplink is muted while playing (`0` = leave it to the device AEC, which enables barge-in together with server-side Chinese KWS).
+- **EQ and limiting**: `dsp.py` applies a low cut and high shelf toward the room's loudness target without clipping (verify with `/loudness`).
+- **Observability**: `plug-test` runs the contract suite; device state, reconnects and drops show up in rui logs and traces.
+
+## Three-line quickstart
+
+```bash
+git clone --branch v1.3.1 https://github.com/yes999zc/rui-dot2-bridge.git && cd rui-dot2-bridge
+docker build -f deploy/downstream/Dockerfile \
+  --build-arg RUI_IMAGE=ghcr.io/yes999zc/rui:0.7.2 -t rui-dot2:1.3.1 .
+docker run --rm --entrypoint rui rui-dot2:1.3.1 plug-test   # contract self-test
+```
+
+In production, run it with Compose: swap the image to `rui-dot2:1.3.1` and set `DOT2_HOST` / `DOT2_LISTEN_PORT` / `DOT2_EM_TOKEN` per device (templates under `deploy/`).
+
+## Compatibility and prerequisites
+
+- `rui` **>=0.6.0 <0.8.0** (this release is validated against 0.7.2); Python **3.11+** (bundled in the downstream image).
+- **Device prerequisites** (third-party hardware, **not affiliated with any vendor**):
+  - Echo Dot 2 (RS03QR) whose firmware already exposes the device's local interface and can reach the rui host;
+  - device and server on the **same LAN**; `DOT2_HOST`, ports and the device token are yours to provide;
+  - this project only provides the software bridge; preparing the device firmware, network and token is up to you, using the device's existing capabilities (see the two prerequisites above).
+- Chinese wake words come from rui's server-side KWS; the on-device OWW path only ships an English model and is off by default (`DOT2_OWW_ON_DEVICE=off`).
+- Music needs a source configured on the rui side (e.g. Navidrome).
+
+## Support matrix
+
+> Measured on rui 0.7.2 on 2026-10-26. Anything untested is marked **untested**.
+
+| Capability | Status |
+|---|---|
+| Wake (server-side Chinese KWS) | 30/30 admitted (2026-10-26, 6 phrases × 5 rounds, calibrated TTS source) |
+| Voice commands | 26/30 (same run, including music-owns-speaker cases) |
+| Barge-in during playback | 8/8 (2026-10-26, real voice) |
+| Short commands during music (next / stop) | 10/10 (2026-10-26, human voice, 1 m) |
+| Volume control | untested (endpoint exists, not systematically verified) |
+| LED | untested |
+| EQ / limiting | measurement passed (`tools/eq_report.py`: 100–300 Hz vs 1–3 kHz from +24.65 dB to +2.11 dB, limiting −12.85 → −2.19 dB, zero clipping); **no listening test** |
+| Concurrent multi-device | untested |
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Plug never loads | `rui_compat` out of range, or `plugin.yaml` not next to the module | Check the manifest error in rui's startup log; confirm the rui version is inside the window |
+| Device will not connect | Wrong `DOT2_HOST` / port / token, or a different subnet | Run `rui plug-test` first, then read `device_link` reconnect logs |
+| It cannot hear you while playing | `DOT2_PLAYBACK_GATE_MS` mutes the uplink during playback | Lower it or set `0` (device AEC takes over) and re-test barge-in with Chinese KWS |
+| A second device breaks the first | `DOT2_CONTROL_PORT` is a **global** environment variable | Unset it and assign `DOT2_LISTEN_PORT` per device |
+| Sound is dull or harsh | EQ target does not match the room | Re-run `tools/eq_report.py`, then tune `DOT2_LOUDNESS_*` / `DOT2_EQ_DIR` |
+| Chinese wake word ignored | On-device OWW enabled with an English-only model | Set `DOT2_OWW_ON_DEVICE=off` and rely on server-side KWS |
+
+## Known limitations
+
+- The on-device OWW path is only validated with an English model; Chinese wake words rely on server-side KWS.
+- EQ has measurements only — **no** listening test; each room still needs on-site tuning.
+- Playback and capture coexistence depends on the device AEC; barge-in latency can be in the hundreds of milliseconds depending on firmware.
+- Concurrent Dot2 units, volume and LED behaviour have not been systematically verified.
+
+## Credits
+
+The `rui-device/v1` contract and the `plug-test` tool come from [rui](https://github.com/yes999zc/rui); the audio parametrisation follows public device-audio debugging practice (see `docs/aec-*.md`).
+
+## License
+
+[MIT](LICENSE).
