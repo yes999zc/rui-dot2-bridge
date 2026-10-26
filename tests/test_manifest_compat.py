@@ -20,9 +20,9 @@ import yaml
 from packaging.specifiers import SpecifierSet
 
 #: The rui release this bridge is verified against. Source: house-ear
-#: ``src/rui/__init__.py`` at the v0.7.0 release tag (``rui.__version__ == "0.7.0"``);
+#: ``src/rui/__init__.py`` at the v0.7.2 release tag (``rui.__version__ == "0.7.2"``);
 #: keep this in sync when the image moves to the next rui minor.
-CURRENT_RUI = "0.7.0"
+CURRENT_RUI = "0.7.2"
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "rui_dot2_bridge"
 MANIFESTS = sorted(PACKAGE.rglob("plugin.yaml"))

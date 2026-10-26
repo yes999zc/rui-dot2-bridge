@@ -1,7 +1,7 @@
 schema: rui-plugin/v0
 id: dot2-echomuse
 name: "Echo Dot 2 (EchoMuse) plug"
-version: 1.3.0
+version: 1.3.1
 # 0.7 release: the ceiling tracks the current minor line, not a single release, so a
 # rui minor bump does not make the loader refuse this plug (loader.py refuses
 # out-of-range manifests, which would leave every Dot 2 without an adapter).

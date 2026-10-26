@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rui-dot2-bridge"
-version = "1.3.0"
+version = "1.3.1"
 description = "Echo Dot 2 as a rui satellite: Socket & Plug v1 adapter for the EchoMuse device protocol"
 requires-python = ">=3.11"
 dependencies = [
