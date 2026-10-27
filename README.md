@@ -69,7 +69,7 @@ docker run --rm -v /vol1/rui/plugins:/opt/rui-plugins:ro -e PYTHONPATH=/opt/rui-
 4) 写 ./config/config.yaml（web.auth_token + devices[]，含 dot2 的 host/listen_port）
 5) TLS（dot2 的 tls_port 开启时必需）：把原 controller 证书放到 ./secrets/（server.pem + server.key）；没有就运行 `bash ../../scripts/make_dev_tls.sh` 自签。自签只保证平面能起，真机是否接受取决于设备信任的 CA
 6) export DOT2_EM_TOKEN=<设备令牌>; docker compose up -d
-7) 验收：/health 的 planes 里 dot2 为 running、devices 正确、device_errors=0（外置 catalog 插件不进 registered）
+7) 验收：/health 的 planes 里 dot2 为 running、devices 正确、device_errors=0（`RUI_ADAPTER_PLUGINS` 的注册项会出现在 `registered`；只有 `RUI_PLUGINS_DIR` 的 catalog 不进）
 失败看：docker compose logs --tail=80 rui 的 config error / adapter / TLS；回滚：down 后换回上一版 image tag；TLS 失败先移走 ./secrets/ 排查
 不需要自己编译 ffmpeg（镜像已内置）
 ```
@@ -192,7 +192,7 @@ Preflight: docker compose version; port 8080 free; 5 GB disk.
 4) write ./config/config.yaml (web.auth_token + devices[] with host/listen_port for dot2)
 5) TLS (required when dot2's tls_port is on): put the original controller cert into ./secrets/ (server.pem + server.key); if you do not have it, run `bash ../../scripts/make_dev_tls.sh`. Self-signed only proves the plane starts; the device's trusted CA decides acceptance
 6) export DOT2_EM_TOKEN=<device token>; docker compose up -d
-7) verify: /health.planes shows dot2 running, devices correct, device_errors=0 (external catalog plugs do not appear in registered)
+7) verify: /health.planes shows dot2 running, devices correct, device_errors=0 (entries listed in `RUI_ADAPTER_PLUGINS` do show up in `registered`; only the `RUI_PLUGINS_DIR` catalog stays out)
 On failure: docker compose logs --tail=80 rui (config error / adapter / TLS); rollback: down and switch the image tag back; for TLS failures move ./secrets/ away first
 No ffmpeg build needed (the image ships it)
 ```
