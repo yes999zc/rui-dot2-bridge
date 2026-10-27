@@ -94,7 +94,6 @@ docker run --rm -v /vol1/rui/plugins:/opt/rui-plugins:ro -e PYTHONPATH=/opt/rui-
 
 ## 支持矩阵
 
-> 数字来自 **rui 0.7.1 / p21** 的实测（2026-10-26 15:01）；**0.7.2 未重测**，未测项一律标「未测」。
 > 与 `docs/canary-0.6.0-official-image.md` 的 **0.6.0 官方镜像 canary 轮次（2026-10-26，未接真机）** 不同轮次，数字不可互证。
 
 | 能力 | 状态 |
@@ -217,7 +216,6 @@ No ffmpeg build needed (the image ships it)
 
 ## Support matrix
 
-> Measured on **rui 0.7.1 / p21** on 2026-10-26 15:01 (0.7.2 not re-measured). Anything untested is marked **untested**.
 > This is a different run from `docs/canary-0.6.0-official-image.md` (0.6.0 official-image canary, 2026-10-26, no real device); the numbers are not interchangeable.
 
 | Capability | Status |
