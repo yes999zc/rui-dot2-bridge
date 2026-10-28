@@ -14,6 +14,39 @@
 
 - 只增工具与文档，**adapter 代码零改动**，不影响 1.3.2 的运行行为；`v1.3.2` 的 tag 口径见该版本的 Notes。
 
+## [1.3.3] - 2026-10-28
+
+### Changed
+
+- 插件版本 1.3.2 → **1.3.3**；`rui_compat` 从 `">=0.7.0 <0.9.0"` 收紧为 **`">=0.8.1 <0.9.0"`**。
+  下界由设备清单新增的 `audio_defaults.voice` 决定：`AudioDefaults` 是 `extra="forbid"`，`voice`
+  块（`followup_delay_ms` / `post_playback_mute_ms`）**0.8.1 才存在**，0.8.0 与整条 0.7.x 线都会以
+  `extra inputs are not permitted` 拒载整套设备清单，而不是忽略该键。上界仍跨到 `<0.9.0`。
+  **1.3.2 是 0.7.x 线的最后一个可用版本**，不向 0.7 线回移。
+- `devices/rs03qr.yaml`：新增 `audio_defaults.voice {followup_delay_ms: 300, post_playback_mute_ms: 500}`
+  —— 本机设备侧 AEC 几乎没有尾音，参考音箱的 2500/2500 窗口会在「退出」后留下多余收音窗口；
+  `rui_min` 从 `0.3.0` 抬到 **`0.8.1`**，`tested_with` 追加 **`0.8.1`**（保留 0.7.9 等历史项，
+  notes 注明这些条目属于 1.3.2 的运行历史）。
+- `pyproject.toml` 版本 1.3.3（manifest 与包版本保持一致）。
+
+### Docs
+
+- README（中英）同步：版本徽章、兼容窗口（`>=0.8.1 <0.9.0`）、兼容矩阵（0.8.1 → 1.3.3，
+  0.7.9 → 1.3.2 为 0.7.x 线最后版本）、镜像 pin 必须 ≥0.8.1（0.7.8 及更早会被拒载）。
+- `tests/test_manifest.py`：版本/窗口/`rui_min` 断言更新，新增
+  `test_voice_defaults_declare_this_models_timing`（`audio_defaults.voice` 必须按两个 0.8.1 键解析），
+  真实 loader 用例补 `defaults.voice` 断言。
+- `tests/test_manifest_compat.py`：`CURRENT_RUI` 改为 **`0.8.1`**（窗口下界），窗口用例改为
+  「接受 0.8.1/0.8.2/0.8.9、拒绝 0.7.9/0.8.0/0.9.0」，docstring 说明下界是承重项。
+
+### Notes
+
+- adapter 无代码改动：1.3.3 只动 manifest、设备清单与文档，运行行为与 1.3.2 在 0.8.1 上一致。
+- **不发 tag、不做 release**：等 9 哥批准；升级前确认核心镜像已到 0.8.1，否则 loader 会拒载插件
+  （回退路径：镜像与插件一起退回 0.7.x + 1.3.2）。
+- `docs/contracts/C-001-per-device-params.md` 仍写 1.3.2 / `>=0.7.0 <0.9.0`，本版本未改该契约文件，
+  待与 lx06 侧同步后单独更新。
+
 ## [1.3.2] - 2026-10-28
 
 ### Changed

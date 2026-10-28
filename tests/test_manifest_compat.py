@@ -5,9 +5,12 @@ rui's loader refuses a plug whose ``rui_compat`` does not match ``rui.__version_
 every device without an adapter on the next minor. This check needs no rui install:
 the version under test is the release this repository is verified against.
 
-Reverse check (old ceiling must fail): copy this manifest to a temporary directory,
-set ``rui_compat`` back to ``>=0.6.0 <0.7.0`` and call
+Reverse check (old window must fail): copy this manifest to a temporary directory,
+set ``rui_compat`` back to ``>=0.7.0 <0.8.0`` and call
 ``uncovered_manifests(<temp root>, CURRENT_RUI)`` - it must return that file.
+The floor itself is load-bearing: ``audio_defaults.voice`` exists from 0.8.1 only
+(``AudioDefaults`` is ``extra="forbid"``), so 0.8.0 and every 0.7.x core reject this
+device manifest.
 """
 
 from __future__ import annotations
@@ -19,12 +22,11 @@ from pathlib import Path
 import yaml
 from packaging.specifiers import SpecifierSet
 
-#: The rui release this bridge is verified against. Source: house-ear
-#: ``src/rui/__init__.py`` at the v0.7.2 release tag (``rui.__version__ == "0.7.2"``);
-#: keep this in sync when the image moves to the next rui minor. 0.7.2 stays inside the
-#: 1.3.2 dual window (``>=0.7.0 <0.9.0``), so pinning it still proves the shipped
-#: manifest accepts a rui release that predates the 0.8 line.
-CURRENT_RUI = "0.7.2"
+#: The rui release this bridge is verified against. 0.8.1 is the first release whose
+#: ``AudioDefaults`` has the ``voice`` block used by ``devices/rs03qr.yaml``; it is
+#: also the 1.3.3 window floor. Keep this in sync when the image moves to the next
+#: rui minor (0.8.1 stays inside ``>=0.8.1 <0.9.0``).
+CURRENT_RUI = "0.8.1"
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "rui_dot2_bridge"
 MANIFESTS = sorted(PACKAGE.rglob("plugin.yaml"))
@@ -52,17 +54,19 @@ class ManifestCompatTest(unittest.TestCase):
     def test_every_shipped_manifest_covers_the_current_rui(self) -> None:
         self.assertEqual(uncovered_manifests(PACKAGE, CURRENT_RUI), [])
 
-    def test_the_window_is_dual_and_covers_the_next_minor(self) -> None:
-        """1.3.2 is a dual window: 0.8.x must load before rui ships it (B3a)."""
+    def test_the_window_starts_at_0_8_1_and_covers_the_next_minor(self) -> None:
+        """1.3.3 is a 0.8.1-only window: floor = first core with `audio_defaults.voice`."""
         for path in MANIFESTS:
             compat = yaml.safe_load(path.read_text(encoding="utf-8"))["rui_compat"]
             window = _specifier(compat)
-            for version in ("0.7.0", "0.7.2", "0.7.9", "0.8.0", "0.8.9"):
+            for version in ("0.8.1", "0.8.2", "0.8.9"):
                 self.assertTrue(
                     window.contains(version),
                     f"{path}: {compat} must accept {version}",
                 )
-            for version in ("0.6.0", "0.9.0"):
+            # 0.8.0 has no VoiceDefaults and 0.7.x has no 0.8 manifest contract at
+            # all; both would refuse the device manifest on the unknown `voice` key.
+            for version in ("0.7.9", "0.8.0", "0.9.0"):
                 self.assertFalse(
                     window.contains(version),
                     f"{path}: {compat} must reject {version}",

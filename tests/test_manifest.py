@@ -45,13 +45,14 @@ class ManifestLayoutTest(unittest.TestCase):
         self.assertEqual(plugin["trust"], "trusted")
         # rui 0.6.0 keeps the same plug/adapter contract, but the manifest now uses
         # rui-device/v1 `audio_defaults`, which a pre-0.6 loader rejects
-        # (DeviceManifest is extra="forbid"). 1.3.2 raises the lower bound to 0.7.0:
-        # the dual window covers the 0.7.x and 0.8.x lines, and 0.6.x deployments stay
-        # on 1.3.1 instead of reaching a "extra inputs are not permitted" error.
-        self.assertEqual(plugin["version"], "1.3.2")
-        # Dual window: 0.7.x and 0.8.x must both pass the loader's range check, so a
-        # rui minor bump does not refuse the plug.
-        self.assertEqual(plugin["rui_compat"], ">=0.7.0 <0.9.0")
+        # (DeviceManifest is extra="forbid"). 1.3.3 raises the lower bound to 0.8.1:
+        # `audio_defaults.voice` is a 0.8.1 key, and both the 0.7.x line and 0.8.0
+        # reject it, so those deployments stay on 1.3.2 (the last 0.7.x build)
+        # instead of reaching an "extra inputs are not permitted" error.
+        self.assertEqual(plugin["version"], "1.3.3")
+        # 0.8.1-only window: the floor is the first release that parses
+        # `audio_defaults.voice`; the ceiling still spans the next minor.
+        self.assertEqual(plugin["rui_compat"], ">=0.8.1 <0.9.0")
         self.assertEqual(plugin["devices"], ["devices/rs03qr.yaml"])
 
     def test_device_yaml_fields(self) -> None:
@@ -118,7 +119,25 @@ class ManifestLayoutTest(unittest.TestCase):
                 "oww_threshold": ("string", ""),
             },
         )
-        self.assertEqual(device["compatibility"]["rui_min"], "0.3.0")
+        self.assertEqual(device["compatibility"]["rui_min"], "0.8.1")
+        # tested_with keeps the 1.3.2 run history plus the 0.8.1 release this build
+        # targets; 1.3.2 is the last build that loads on the 0.7.x line.
+        self.assertIn("0.8.1", device["compatibility"]["tested_with"])
+        self.assertIn("0.7.9", device["compatibility"]["tested_with"])
+        self.assertIn("0.8.1", device["compatibility"]["notes"])
+
+    def test_voice_defaults_declare_this_models_timing(self) -> None:
+        """`audio_defaults.voice` must parse as the two 0.8.1 keys.
+
+        AudioDefaults is extra="forbid" and rui <=0.8.0 has no VoiceDefaults, so an
+        unknown key here makes the loader reject the whole device manifest — that is
+        exactly why plugin.yaml's floor is 0.8.1. Device-side AEC leaves almost no
+        tail, so the Dot 2 asks for a 300 ms follow-up and 500 ms post-playback mute
+        instead of the reference speaker's 2500/2500 window.
+        """
+        device = yaml.safe_load((PACKAGE / "devices" / "rs03qr.yaml").read_text(encoding="utf-8"))
+        voice = device["audio_defaults"]["voice"]
+        self.assertEqual(voice, {"followup_delay_ms": 300, "post_playback_mute_ms": 500})
 
     def test_wake_block_carries_no_secret_or_address(self) -> None:
         device = yaml.safe_load((PACKAGE / "devices" / "rs03qr.yaml").read_text(encoding="utf-8"))
@@ -159,9 +178,9 @@ class RealLoaderTest(unittest.TestCase):
             self.skipTest("installed rui predates the 0.6 audio_defaults field")
         compat = _manifest()["rui_compat"]
         if not _window(compat).contains(rui.__version__):
-            # 1.3.2 ships a dual window (>=0.7.0 <0.9.0). The loader refuses an
-            # out-of-range manifest by design, so a dev venv still on 0.6.x cannot
-            # exercise this path; test_manifest_compat covers the range itself.
+            # 1.3.3 ships a 0.8.1-only window (>=0.8.1 <0.9.0). The loader refuses
+            # an out-of-range manifest by design, so a dev venv still on 0.6.x/0.7.x
+            # cannot exercise this path; test_manifest_compat covers the range itself.
             self.skipTest(
                 f"installed rui {rui.__version__} is outside the manifest window {compat}"
             )
@@ -186,6 +205,13 @@ class RealLoaderTest(unittest.TestCase):
         self.assertEqual(defaults.capture.bits, 16)
         self.assertEqual((defaults.playback.rate, defaults.playback.channels), (48000, 1))
         self.assertEqual(defaults.ack_echo_ignore_ms, 2500)
+        # Only a 0.8.1+ core reaches this point, so `voice` must be parsed into the
+        # typed VoiceDefaults rather than dropped or rejected.
+        self.assertIsNotNone(defaults.voice)
+        self.assertEqual(
+            (defaults.voice.followup_delay_ms, defaults.voice.post_playback_mute_ms),
+            (300, 500),
+        )
 
 
 if __name__ == "__main__":

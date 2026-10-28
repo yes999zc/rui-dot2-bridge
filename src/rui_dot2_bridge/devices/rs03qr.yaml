@@ -13,9 +13,15 @@ wake: {source: device, barge_via_device: true}
 # The stock Dot 2 captures mono 16 kHz S16 with no playback reference; the speaker
 # wire is 48 kHz mono. ack_echo_ignore_ms=2500 keeps the echo window working on
 # 0.6 without a deployment-side override.
+# voice: this model's acoustic timing (rui-device/v1 `audio_defaults.voice`, rui 0.8.1).
+# Device-side AEC leaves almost no tail, so the reference speaker's 2500/2500 window
+# left a listening window behind after a dismissal. 300 ms follow-up, 500 ms
+# post-playback mute. This key is why the plug floor is 0.8.1: AudioDefaults is
+# extra="forbid", so 0.8.0 and every 0.7.x loader rejects the whole device manifest.
 audio_defaults:
   capture: {rate: 16000, channels: 1, mic_channels: 1, ref_channels: 0, bits: 16}
   playback: {rate: 48000, channels: 1}
+  voice: {followup_delay_ms: 300, post_playback_mute_ms: 500}
   ack_echo_ignore_ms: 2500
 device_side:
   artifact: firmware
@@ -43,5 +49,5 @@ params:
   - {key: eq_dir, label: "EQ 曲线目录", type: string, default: "", help: "Read-only vendor EQ_*.cfg directory; empty = shared default (artifacts/eq-prototype, else secrets/eq)."}
   - {key: secrets_dir, label: "凭据目录", type: string, default: "", help: "TLS material and device_token; empty = DOT2_SECRETS_DIR, then secrets/<device id> when present, else secrets."}
   - {key: oww_threshold, label: "设备端唤醒阈值", type: string, default: "", help: "Device-side OWW score threshold; empty keeps the firmware default (0.5)."}
-compatibility: {rui_min: "0.3.0", tested_with: ["0.3.4", "0.4.0", "0.4.1", "0.4.2", "0.5.0", "0.5.1", "0.5.2", "0.6.0", "0.7.9"], notes: "device_wake is opt-in: it needs a device-side OWW model for the configured wake words; no reference channel (device AEC); audio_defaults (0.6+) declares the mono 16 kHz capture, 48 kHz playback and the 2500 ms ack echo window."}
+compatibility: {rui_min: "0.8.1", tested_with: ["0.3.4", "0.4.0", "0.4.1", "0.4.2", "0.5.0", "0.5.1", "0.5.2", "0.6.0", "0.7.9", "0.8.1"], notes: "device_wake is opt-in: it needs a device-side OWW model for the configured wake words; no reference channel (device AEC); audio_defaults (0.6+) declares the mono 16 kHz capture, 48 kHz playback and the 2500 ms ack echo window; `audio_defaults.voice` needs rui 0.8.1+ (0.7.x/0.8.0 loaders reject it), and tested_with entries before 0.8.1 are the 1.3.2 run history — 1.3.2 is the last build for the 0.7.x line."}
 acceptance: {verified: false, last_verified: "", evidence: "Contract kit report: artifacts/contract-report.json (rui 0.3.4). Live-device acceptance pending."}

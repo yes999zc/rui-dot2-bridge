@@ -6,8 +6,8 @@
 不改 rui 核心：一个纯外置插件（0.7.6 起核心不再内置设备实现，本仓库是唯一来源）；设备侧 AEC 归设备，服务端只做决策。
 
 [![License: MIT](https://img.shields.io/github/license/yes999zc/rui-dot2-bridge?style=flat-square)](LICENSE)
-[![rui](https://img.shields.io/badge/rui-%3E%3D0.7.0%20%3C0.9.0-2f6f6a)](https://github.com/yes999zc/rui)
-[![plugin](https://img.shields.io/badge/plugin-1.3.2-b4744a)](src/rui_dot2_bridge/plugin.yaml)
+[![rui](https://img.shields.io/badge/rui-%3E%3D0.8.1%20%3C0.9.0-2f6f6a)](https://github.com/yes999zc/rui)
+[![plugin](https://img.shields.io/badge/plugin-1.3.3-b4744a)](src/rui_dot2_bridge/plugin.yaml)
 
 </div>
 
@@ -37,7 +37,7 @@ rui 起一个音频平面 → 插件连上设备（wss 控制通道 + 双向音�
 
 ## 特性
 
-- **不改核心**：插件通过 `rui-device/v1` 契约接入；兼容窗口 `>=0.7.0 <0.9.0` 同时覆盖 0.7.x 与 0.8.x，rui 升级到下一个次版本不会让插件失效。
+- **不改核心**：插件通过 `rui-device/v1` 契约接入；兼容窗口 `>=0.8.1 <0.9.0`。下界由 `audio_defaults.voice`（本机 300 ms 跟进 / 500 ms 播放后静音）决定——该键 0.8.1 才被核心解析，0.8.0 与 0.7.x 会以 `extra inputs are not permitted` 拒载整套设备清单；0.7.x 线最后可用版本是 **1.3.2**。
 - **双向音频**：上行麦克风、下行播放分开走；播放/停止/音量/指示灯都是独立命令。
 - **播放期门控**：`DOT2_PLAYBACK_GATE_MS` 控制「播放时静音上行」的时长（`0` = 交给设备 AEC，配合服务端中文 KWS 时可实现播放中打断）。
 - **EQ 与限幅**：`dsp.py` 按房间响度目标做低切与高频搁架，并保证不削波（目标值可用 `/loudness` 复核）。
@@ -107,7 +107,7 @@ python scripts/onboard_device.py --device-id dot2-b --rui http://<your-rui>:8080
 
 ## 兼容性与前置条件
 
-- `rui` **>=0.7.0 <0.9.0**（双窗口：0.7.x + 0.8.x；`tested_with` 标注 **0.7.9**，下方镜像 pin 仍是已验摘要的 0.7.8）；Python **3.11+**（核心镜像已内置）。
+- `rui` **>=0.8.1 <0.9.0**（`audio_defaults.voice` 自 0.8.1 起才被解析；`tested_with` 标注 **0.8.1**，镜像 pin 必须 ≥0.8.1——0.7.8 及更早会被 loader 拒载）；Python **3.11+**（核心镜像已内置）。
 - 安装：核心镜像 + 外置插件目录（`/vol1/rui/plugins/rui_dot2_bridge`），挂载 `/opt/rui-plugins` 并设 `PYTHONPATH` + `RUI_ADAPTER_PLUGINS`；**不需要造下游镜像**。
 - **设备前置条件**（第三方设备，与厂商**无官方关联**）：
   - Echo Dot 2（RS03QR），固件需已具备设备本地接口并能与 rui 主机互通；
@@ -118,7 +118,8 @@ python scripts/onboard_device.py --device-id dot2-b --rui http://<your-rui>:8080
 
 | rui 核心 | 本插件 | 说明 |
 |---|---|---|
-| **0.7.8**（当前） | **1.3.2** | 推荐；核心 + 外置插件目录（窗口覆盖 0.7.x / 0.8.x） |
+| **0.8.1**（当前） | **1.3.3** | 推荐；核心 + 外置插件目录（声学时序走 manifest 的 `audio_defaults.voice`） |
+| 0.7.9（历史） | 1.3.2 | 0.7.x 线的最后可用版本（无 `voice` 块） |
 | 0.7.4（历史） | 1.3.1 | 外置插件同样可用 |
 
 **已知限制**：未声明 `wake_words_residual` 的第三方清单不做 vendor 短语兜底；两音箱默认只起第一台设备的平面（需 `multi_device`）；自签证书只保证平面能起，真机信任取决于设备 CA。
@@ -190,7 +191,7 @@ Source: [`docs/assets/architecture.mmd`](docs/assets/architecture.mmd); exports 
 
 ## Features
 
-- **No core changes**: the plug speaks `rui-device/v1`; the window `>=0.7.0 <0.9.0` spans both the 0.7.x and 0.8.x lines, so a rui minor bump will not break it.
+- **No core changes**: the plug speaks `rui-device/v1`; the window is `>=0.8.1 <0.9.0`. The floor comes from `audio_defaults.voice` (this box's 300 ms follow-up / 500 ms post-playback mute): 0.8.1 is the first core that parses that key, while 0.8.0 and every 0.7.x release refuse the whole device manifest with `extra inputs are not permitted`. **1.3.2** is the last build for the 0.7.x line.
 - **Duplex audio**: microphone uplink and playback downlink are separate; play/stop/volume/LED are individual commands.
 - **Playback gate**: `DOT2_PLAYBACK_GATE_MS` sets how long the uplink is muted while playing (`0` = leave it to the device AEC, which enables barge-in together with server-side Chinese KWS).
 - **EQ and limiting**: `dsp.py` applies a low cut and high shelf toward the room's loudness target without clipping (verify with `/loudness`).
@@ -266,7 +267,7 @@ No ffmpeg build needed (the image ships it)
 
 ## Compatibility and prerequisites
 
-- `rui` **>=0.7.0 <0.9.0** (dual window: 0.7.x + 0.8.x; `tested_with` names **0.7.9**, while the image pin below stays on the verified 0.7.8 digest); Python **3.11+** (bundled in the core image).
+- `rui` **>=0.8.1 <0.9.0** (`audio_defaults.voice` is parsed from 0.8.1; `tested_with` names **0.8.1**, and the image pin must be ≥0.8.1 — 0.7.8 and older are refused by the loader); Python **3.11+** (bundled in the core image).
 - Install: core image + external plug directory (`/vol1/rui/plugins/rui_dot2_bridge`), mounted at `/opt/rui-plugins` with `PYTHONPATH` + `RUI_ADAPTER_PLUGINS`; **no downstream image is needed**.
 - **Device prerequisites** (third-party hardware, **not affiliated with any vendor**):
   - Echo Dot 2 (RS03QR) whose firmware already exposes the device's local interface and can reach the rui host;
@@ -277,7 +278,8 @@ No ffmpeg build needed (the image ships it)
 
 | rui core | This plug | Notes |
 |---|---|---|
-| **0.7.8** (current) | **1.3.2** | Recommended; core image + external plug directory (window covers 0.7.x / 0.8.x) |
+| **0.8.1** (current) | **1.3.3** | Recommended; core image + external plug directory (acoustic timing comes from the manifest's `audio_defaults.voice`) |
+| 0.7.9 (historical) | 1.3.2 | Last build that loads on the 0.7.x line (no `voice` block) |
 | 0.7.4 (historical) | 1.3.1 | The external plug works the same way |
 
 **Known limitations**: a third-party manifest without `wake_words_residual` gets no vendor-phrase backstop; two speakers start one plane by default unless `multi_device` is enabled; a self-signed certificate only starts the plane, real-device trust depends on its CA.

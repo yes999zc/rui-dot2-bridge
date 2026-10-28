@@ -1,12 +1,16 @@
 schema: rui-plugin/v0
 id: dot2-echomuse
 name: "Echo Dot 2 (EchoMuse) plug"
-version: 1.3.2
-# B3a dual window: one range spans the 0.7.x and 0.8.x release lines instead of a
-# single minor. loader.py compares rui.__version__ against this range and refuses
-# out-of-range manifests, which would leave every Dot 2 without an adapter, so the
-# ceiling must already cover the next minor before it ships.
-rui_compat: ">=0.7.0 <0.9.0"
+version: 1.3.3
+# 1.3.3 is a 0.8.1-only build: devices/rs03qr.yaml declares `audio_defaults.voice`
+# (followup_delay_ms 300 / post_playback_mute_ms 500) for this model's acoustic
+# timing. rui <=0.8.0 validates AudioDefaults with extra="forbid" and has no `voice`
+# field, so the loader would reject the whole device manifest there; 0.8.1 is the
+# first release that parses it. loader.py compares rui.__version__ against this
+# range and refuses out-of-range manifests, which would leave every Dot 2 without an
+# adapter, so the ceiling still covers the next minor (0.9.0 is not yet contracted).
+# 1.3.2 remains the last build that loads on the 0.7.x line.
+rui_compat: ">=0.8.1 <0.9.0"
 license: MIT
 maintainer: "Bakey Zhang"
 homepage: "https://github.com/yes999zc/rui-dot2-bridge"
