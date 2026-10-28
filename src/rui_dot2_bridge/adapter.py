@@ -150,6 +150,27 @@ DEFAULT_OWW_MODEL = ""
 #: well under rui's 5 s probe timeout and only applies when wake is configured.
 PROBE_WAKE_WAIT_S = 1.0
 
+#: Shared, read-only vendor EQ curves (C-001 §1). Multiple planes may point at
+#: the same directory: it is input, not per-device state. A deployment that
+#: mounts its own curve set sets params.eq_dir; otherwise the evaluation copy
+#: wins and secrets/eq is the last resort.
+DEFAULT_EQ_DIR = "artifacts/eq-prototype"
+FALLBACK_EQ_DIR = "secrets/eq"
+
+
+def _configured_path(explicit: str | Path | None, env_name: str, default: Path) -> Path:
+    """C-001 §2: explicit value > DOT2_* env > the device-level default.
+
+    ``None`` (or an empty value) means "nothing was configured for this device":
+    a direct ctor and build() after empty params/env both land here, and the env
+    fallback keeps a pre-C-001 single-device deployment working unchanged.
+    """
+    for value in (explicit, os.environ.get(env_name)):
+        text = str(value).strip() if value is not None else ""
+        if text:
+            return Path(text).expanduser()
+    return default
+
 
 class Dot2Adapter(DeviceAdapter):
     """Echo Dot 2 running EchoMuse firmware, driven by rui instead of EchoMuse."""
@@ -177,6 +198,14 @@ class Dot2Adapter(DeviceAdapter):
         prebuffer_start_ms: int | None = None,
         eos_idle_ms: int | None = None,
         loudness_defaults: dict | None = None,
+        # C-001 per-device runtime knobs. ``None`` = "not resolved for this
+        # device": fall back to the DOT2_* env, then to the device-level default,
+        # so a direct ctor keeps the 0.7.9 single-device behaviour and build()
+        # supplies the params > env resolution.
+        eq_dir: str | Path | None = None,
+        loudness_file: str | Path | None = None,
+        control_port: int | None = None,
+        oww_threshold: float | str | None = None,
     ) -> None:
         self.device_id = device_id
         self.host = host
@@ -218,12 +247,18 @@ class Dot2Adapter(DeviceAdapter):
         self.oww_model = str(oww_model or "").strip()
         self._push_oww = bool(self.oww_model)
         # The bar a device-side score must clear. None keeps the firmware default
-        # (0.5); a deployment that installed a model may tune it.
-        _oww_thr = os.environ.get("DOT2_OWW_THRESHOLD", "").strip()
+        # (0.5); a deployment that installed a model may tune it. C-001: the value
+        # is per device (params.oww_threshold > DOT2_OWW_THRESHOLD > None), and
+        # the kwarg only falls back to env when build() passed nothing.
+        _oww_thr = oww_threshold
+        if _oww_thr is None:
+            _oww_thr = os.environ.get("DOT2_OWW_THRESHOLD", "").strip()
         try:
-            self.oww_threshold = float(_oww_thr) if _oww_thr else None
-        except ValueError:
+            _oww_thr_text = str(_oww_thr).strip()
+            self.oww_threshold = float(_oww_thr_text) if _oww_thr_text else None
+        except (TypeError, ValueError):
             self.oww_threshold = None
+            log.warning("dot2 adapter: ignoring oww_threshold=%r (not a number)", _oww_thr)
         self.plug_id = str(plug_id or "").strip()
         # Bounded, thread-safe queue for device wakes (v1 section 4.2). The
         # control socket produces; rui's audio plane drains via drain_wakes().
@@ -310,9 +345,25 @@ class Dot2Adapter(DeviceAdapter):
         self._last_chunk_at: float | None = None
         self._inject_server: asyncio.base_events.Server | None = None
         # Loudness: stock EQ ladder + limiter, runtime-tunable over loopback HTTP.
-        self._eq_dir = Path(os.environ.get("DOT2_EQ_DIR") or "artifacts/eq-prototype")
-        self._loudness_file = Path(os.environ.get("DOT2_LOUDNESS_FILE") or "dev/rui/loudness.json")
-        self._control_port = int(os.environ.get("DOT2_CONTROL_PORT", "0") or 0)
+        # C-001: build() hands in the per-device resolution (params > env); each
+        # kwarg only falls back to env/default when it is None. The one writable
+        # piece of state - the loudness config - defaults to a per-device path so
+        # two planes cannot overwrite each other; EQ curves stay shared because
+        # they are read-only vendor input.
+        self._eq_dir = _configured_path(eq_dir, "DOT2_EQ_DIR", Path(DEFAULT_EQ_DIR))
+        self._loudness_file = _configured_path(
+            loudness_file,
+            "DOT2_LOUDNESS_FILE",
+            Path("dev") / "rui" / device_id / "loudness.json",
+        )
+        self._control_port = max(
+            0,
+            int(
+                control_port
+                if control_port is not None
+                else (os.environ.get("DOT2_CONTROL_PORT", "").strip() or 0)
+            ),
+        )
         config = LoudnessProcessor.load_config(self._loudness_file)
         if loudness_defaults and not self._loudness_file.is_file():
             # A fresh deployment inherits the curve declared by the plug manifest;
@@ -321,9 +372,10 @@ class Dot2Adapter(DeviceAdapter):
         env_mode = (os.environ.get("DOT2_LOUDNESS_MODE") or "").strip()
         if env_mode:
             config.mode = env_mode
-        if not os.environ.get("DOT2_EQ_DIR"):
+        _explicit_eq = str(eq_dir).strip() if eq_dir is not None else ""
+        if not _explicit_eq and not os.environ.get("DOT2_EQ_DIR", "").strip():
             # Default lookup: the evaluation copy, then secrets/eq for a deployment.
-            for candidate in ("artifacts/eq-prototype", "secrets/eq"):
+            for candidate in (DEFAULT_EQ_DIR, FALLBACK_EQ_DIR):
                 if (Path(candidate) / "EQ_100.cfg").is_file():
                     self._eq_dir = Path(candidate)
                     break
@@ -535,14 +587,38 @@ class Dot2Adapter(DeviceAdapter):
         self._link_kwargs["mic_gain_db"] = self._mic_gain_db
         self._link = DeviceLink(**self._link_kwargs)  # type: ignore[arg-type]
         await self._link.start()
-        if self._inject_port:
-            from .inject import start_inject_server
+        try:
+            if self._inject_port:
+                from .inject import start_inject_server
 
-            self._inject_server = await start_inject_server(self, "127.0.0.1", self._inject_port)
-        if self._control_port:
-            self._control_server = await start_control_server(
-                self._loudness, "127.0.0.1", self._control_port, self._loudness_file
-            )
+                self._inject_server = await start_inject_server(
+                    self, "127.0.0.1", self._inject_port
+                )
+            if self._control_port:
+                try:
+                    self._control_server = await start_control_server(
+                        self._loudness, "127.0.0.1", self._control_port, self._loudness_file
+                    )
+                except OSError as exc:
+                    # C-001 §4: a loopback port already claimed by another plane is a
+                    # degraded tuning surface, not a failed device. The inbound link
+                    # (and the dev inject hook, if any) is already listening, so
+                    # open() must return and let the audio plane run; close() reaps
+                    # what did start. EADDRINUSE is the expected case here.
+                    self._control_server = None
+                    log.warning(
+                        "dot2 adapter: loudness control on 127.0.0.1:%d unavailable (%s); "
+                        "continuing without it "
+                        "(give every plane a unique params.control_port or 0)",
+                        self._control_port,
+                        exc,
+                    )
+        except BaseException:
+            # Anything else that fails after the inbound link started (a taken
+            # inject port, a cancellation) must not leave that link listening for
+            # a plane that never came up.
+            await self.close()
+            raise
         log.info("dot2 adapter: loudness %s", self._loudness.describe())
         log.info(
             "dot2 adapter: waiting for %s on port %s (volume ceiling %.0f%%)",
@@ -947,12 +1023,18 @@ def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
         DEFAULT_TOKEN_ENV,
     )
     plug_id = _text(params.get("plug_id"), env.get("DOT2_PLUG_ID"))
+    # C-001 §1/§2: DeviceConfig field > params > DOT2_SECRETS_DIR > a per-device
+    # directory (when the deployment created one) > the shared "secrets". The
+    # per-device default is what stops two planes from silently sharing one
+    # device_token/TLS pair; an existing single-device layout is untouched.
     secrets_dir = _text(
         getattr(dev, "secrets_dir", None),
         params.get("secrets_dir"),
         env.get("DOT2_SECRETS_DIR"),
-        "secrets",
     )
+    if not secrets_dir:
+        per_device = Path("secrets") / device_id
+        secrets_dir = str(per_device) if per_device.is_dir() else "secrets"
     # The EchoMuse X-EM-Token and rui's own transport admission are separate
     # secrets, so token_env names the adapter's own variable (manifest default:
     # DOT2_EM_TOKEN). Env wins; the deployment's secrets dir carries the same
@@ -1037,6 +1119,15 @@ def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
         DEFAULT_EOS_IDLE_MS,
     )
     inject_port = _optional_int(env.get("DOT2_INJECT_PORT"))
+    # -- per-device runtime knobs (C-001 §2): params > DOT2_* env > default -----
+    # Empty text means "unset": None goes into the ctor, which then owns the one
+    # definition of the defaults (shared EQ dir; dev/rui/<device_id>/loudness.json;
+    # control off; firmware wake threshold). control_port is resolved to an int
+    # here because 0 is a real value ("disabled") that must not fall through to env.
+    eq_dir = _text(params.get("eq_dir"), env.get("DOT2_EQ_DIR"))
+    loudness_file = _text(params.get("loudness_file"), env.get("DOT2_LOUDNESS_FILE"))
+    control_port = _optional_int(params.get("control_port"), env.get("DOT2_CONTROL_PORT"), 0)
+    oww_threshold = _text(params.get("oww_threshold"), env.get("DOT2_OWW_THRESHOLD"))
     loudness = manifest.get("loudness")
 
     if plug_id or oww_model:
@@ -1067,6 +1158,10 @@ def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
         prebuffer_start_ms=prebuffer_start_ms,
         eos_idle_ms=eos_idle_ms,
         loudness_defaults=loudness if isinstance(loudness, dict) else None,
+        eq_dir=eq_dir or None,
+        loudness_file=loudness_file or None,
+        control_port=control_port,
+        oww_threshold=oww_threshold or None,
     )
     # Kit-only hints (not part of DeviceAdapter, ignored by the audio plane): this
     # is an inbound transport, so open() only starts listening and capture/playback

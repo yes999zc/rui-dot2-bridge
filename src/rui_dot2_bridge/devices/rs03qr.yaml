@@ -35,5 +35,13 @@ params:
   - {key: wake_words, label: "唤醒词", type: list, default: ["你好小瑞"], max: 3}
   - {key: port, label: "入站端口", type: int, default: 8870, help: "EchoMuse wss listen port; the device dials this port."}
   - {key: oww_model, label: "设备端唤醒模型", type: string, default: "", help: "Only set when a matching OWW model was pushed to the device; empty keeps RUI KWS."}
+  # Per-device runtime knobs (C-001). Empty string means "inherit": the adapter
+  # falls back to DOT2_* env, then to the device-level default; control_port 0
+  # keeps the loopback loudness API off, so a second plane cannot claim the port.
+  - {key: control_port, label: "响度控制端口", type: int, default: 0, help: "Loopback loudness API on 127.0.0.1; 0 disables it. Give every plane a unique port (or 0)."}
+  - {key: loudness_file, label: "响度状态文件", type: string, default: "", help: "Writable loudness state; empty = dev/rui/<device id>/loudness.json (isolated per device)."}
+  - {key: eq_dir, label: "EQ 曲线目录", type: string, default: "", help: "Read-only vendor EQ_*.cfg directory; empty = shared default (artifacts/eq-prototype, else secrets/eq)."}
+  - {key: secrets_dir, label: "凭据目录", type: string, default: "", help: "TLS material and device_token; empty = DOT2_SECRETS_DIR, then secrets/<device id> when present, else secrets."}
+  - {key: oww_threshold, label: "设备端唤醒阈值", type: string, default: "", help: "Device-side OWW score threshold; empty keeps the firmware default (0.5)."}
 compatibility: {rui_min: "0.3.0", tested_with: ["0.3.4", "0.4.0", "0.4.1", "0.4.2", "0.5.0", "0.5.1", "0.5.2", "0.6.0"], notes: "device_wake is opt-in: it needs a device-side OWW model for the configured wake words; no reference channel (device AEC); audio_defaults (0.6+) declares the mono 16 kHz capture, 48 kHz playback and the 2500 ms ack echo window."}
 acceptance: {verified: false, last_verified: "", evidence: "Contract kit report: artifacts/contract-report.json (rui 0.3.4). Live-device acceptance pending."}

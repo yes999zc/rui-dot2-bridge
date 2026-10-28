@@ -79,7 +79,32 @@ class ManifestLayoutTest(unittest.TestCase):
         self.assertEqual(runtime["token_env"], "DOT2_EM_TOKEN")
         self.assertEqual(
             {param["key"] for param in device["params"]},
-            {"host", "room", "wake_words", "port", "oww_model"},
+            {
+                "host",
+                "room",
+                "wake_words",
+                "port",
+                "oww_model",
+                # C-001: the five formerly env-only runtime knobs are declared so
+                # a v2 config can set them per device (no unknown_params_ignored).
+                "control_port",
+                "loudness_file",
+                "eq_dir",
+                "secrets_dir",
+                "oww_threshold",
+            },
+        )
+        declared = {param["key"]: param for param in device["params"]}
+        self.assertEqual(
+            {key: (declared[key]["type"], declared[key]["default"]) for key in
+             ("control_port", "loudness_file", "eq_dir", "secrets_dir", "oww_threshold")},
+            {
+                "control_port": ("int", 0),
+                "loudness_file": ("string", ""),
+                "eq_dir": ("string", ""),
+                "secrets_dir": ("string", ""),
+                "oww_threshold": ("string", ""),
+            },
         )
         self.assertEqual(device["compatibility"]["rui_min"], "0.3.0")
 

@@ -114,7 +114,7 @@ docker run --rm -v /vol1/rui/plugins:/opt/rui-plugins:ro -e PYTHONPATH=/opt/rui-
 | 插件没被加载 | `rui_compat` 越界或 `plugin.yaml` 不在模块目录 | 看 rui 启动日志里的 manifest 报错；确认 rui 版本在窗口内 |
 | 设备连不上 | `DOT2_HOST` / 端口 / 令牌错，或设备不在同一网段 | 先 `rui plug-test`，再看 `device_link` 的重连日志 |
 | 播放时喊不醒 | `DOT2_PLAYBACK_GATE_MS` 让上行被静音 | 调小或设 `0`（由设备 AEC 负责），再用中文 KWS 验证打断 |
-| 加第二台设备后第一台失效 | `DOT2_CONTROL_PORT` 是**全局**环境变量 | 清掉它，改为按设备分配 `DOT2_LISTEN_PORT` |
+| 加第二台设备后第一台失效 | 旧版 `DOT2_CONTROL_PORT` / `DOT2_LOUDNESS_FILE` 只能全局配置 | 升级后 5 项都按设备取：在 `devices[].params` 里给每台写 `control_port`（不同端口或 `0`）、`loudness_file`、`eq_dir`、`secrets_dir`、`oww_threshold`；env 仍作单台 fallback |
 | 声音发闷/发尖 | EQ 目标与房间不匹配 | 重跑 `tools/eq_report.py` 拿测量值，再调 `DOT2_LOUDNESS_*` / `DOT2_EQ_DIR` |
 | 中文唤醒词没反应 | 打开了设备端 OWW 但只有英文模型 | 设 `DOT2_OWW_ON_DEVICE=off`，用服务端中文 KWS |
 
@@ -236,7 +236,7 @@ No ffmpeg build needed (the image ships it)
 | Plug never loads | `rui_compat` out of range, or `plugin.yaml` not next to the module | Check the manifest error in rui's startup log; confirm the rui version is inside the window |
 | Device will not connect | Wrong `DOT2_HOST` / port / token, or a different subnet | Run `rui plug-test` first, then read `device_link` reconnect logs |
 | It cannot hear you while playing | `DOT2_PLAYBACK_GATE_MS` mutes the uplink during playback | Lower it or set `0` (device AEC takes over) and re-test barge-in with Chinese KWS |
-| A second device breaks the first | `DOT2_CONTROL_PORT` is a **global** environment variable | Unset it and assign `DOT2_LISTEN_PORT` per device |
+| A second device breaks the first | The old `DOT2_CONTROL_PORT` / `DOT2_LOUDNESS_FILE` were host-global | All five knobs resolve per device now: set `control_port` (a distinct port or `0`), `loudness_file`, `eq_dir`, `secrets_dir` and `oww_threshold` under each `devices[].params`; env stays as a single-device fallback |
 | Sound is dull or harsh | EQ target does not match the room | Re-run `tools/eq_report.py`, then tune `DOT2_LOUDNESS_*` / `DOT2_EQ_DIR` |
 | Chinese wake word ignored | On-device OWW enabled with an English-only model | Set `DOT2_OWW_ON_DEVICE=off` and rely on server-side KWS |
 

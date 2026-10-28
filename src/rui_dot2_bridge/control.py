@@ -116,6 +116,13 @@ def make_handler(processor: LoudnessProcessor, persist: Path | None):
 
 async def start_control_server(processor: LoudnessProcessor, host: str, port: int,
                                persist: Path | None = None) -> asyncio.Server:
+    """Bind the loopback listener; ``OSError`` (e.g. EADDRINUSE) is the caller's.
+
+    C-001 §4 makes port contention a per-device degradation, not a startup
+    failure: adapter.open() catches this and runs the plane without the control
+    surface. Keeping the low-level helper honest means a caller cannot mistake a
+    failed bind for a listening socket.
+    """
     server = await asyncio.start_server(make_handler(processor, persist), host, port)
     log.info("dot2 loudness control on http://%s:%d (GET/PUT /loudness)", host, port)
     return server
