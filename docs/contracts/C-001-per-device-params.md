@@ -1,10 +1,15 @@
 # C-001 — dot2 每设备参数契约（v1）
 
-- 日期：2026-10-28
-- provider：`rui-dot2-bridge` 1.3.2（plug 源码挂载；**B3a dual-window 1.3.2，tag/release pending 9哥 approval**）
-- consumer：`rui` 0.7.9（`rui_compat: ">=0.7.0 <0.9.0"` — B3a 双窗口，同时覆盖 0.7.x / 0.8.x）
+- 日期：2026-10-28（2026-10-28 晚更新：1.3.3 / rui 0.8.1 窗口）
+- provider：`rui-dot2-bridge` **1.3.3**（tag `v1.3.3` → `31195ee`；`rui_compat: ">=0.8.1 <0.9.0"`）
+- consumer：`rui` **0.8.1**（`rui_compat` 下界即 0.8.1；1.3.2 是 0.7.x 线最后一个可用版本）
 - 背景：`docs/backlog-0.8.md` §c C-0。第 2 台起同宿主多 plane，5 项原 env-only 配置必须能按设备取。
 - 落点：provider `src/rui_dot2_bridge/adapter.py` + `devices/rs03qr.yaml`；consumer 只把 `devices[].params` 原样传入（`DeviceConfig.params` 已是 `dict[str, Any]`，无需改 rui core）。
+- **版本窗口（0.8.1）**：1.3.3 在 C-001 的 5 参数之外，还在设备清单声明了 `audio_defaults.voice`
+  （`followup_delay_ms: 300` / `post_playback_mute_ms: 500`）。这是 rui 0.8.1 才存在的键，且
+  `AudioDefaults` 是 `extra="forbid"`，所以 0.8.0 与 0.7.x 会**拒载整个设备清单** —— 这就是
+  provider 下限抬到 0.8.1 的唯一原因，不是 5 参数本身有破坏性变更。部署必须 core 0.8.1 + 桥
+  1.3.3 同发；core ≤0.8.0 配 1.3.3 会让每台 Dot 2 失去 adapter。
 
 ## 1. 参数表（在 `devices/rs03qr.yaml` 声明）
 
@@ -50,8 +55,10 @@ env 只作 fallback：现网单台 override 继续生效，不强制迁移。
 - 无破坏性接口：`build(dev, cfg)` 签名不变；新增 4 个**可选** ctor kwarg。
 - 现网单台：env 优先，路径/端口/阈值与 0.7.9 完全一致。
 - 回滚：revert provider 一个 commit 即回到 env-only；consumer 无需回滚（无 core 行为变更）。
-- 版本：B3a dual-window 1.3.2，tag/release pending 9哥 approval（窗口 `">=0.7.0 <0.9.0"` 覆盖
-  0.7.x / 0.8.x，0.6.x 部署停在 1.3.1）；生产部署需 9 哥单独批准。
+- 版本：**1.3.3**，`rui_compat ">=0.8.1 <0.9.0"`（tag `v1.3.3` → `31195ee`）。1.3.2
+  （`>=0.7.0 <0.9.0`）是 0.7.x 线的最后一个可用版本，也是 0.8.0 能加载的最后一个版本；0.6.x
+  部署停在 1.3.1。下界是承重项：0.8.1 是第一个解析 `audio_defaults.voice` 的 rui，抬下界不是
+  5 参数的破坏性变更（见开头的「版本窗口」）。生产部署仍需 9 哥 单独批准。
 
 ## 6. 验收（provider 侧自动测）
 
