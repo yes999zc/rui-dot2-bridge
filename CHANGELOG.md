@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **1.3.4**：`/data` 单帧写超时 0.75 s → **1.0 s**（真机依据：2026-10-28 19:20:38 dot2-b 在 2.4G 重传期出现一次 0.75 s 停顿即被判定为死连接，abort 后需 50.6 s 才恢复；1.0 s 容忍单次重传抖动，仍保留硬上界；`CONTROL_WRITE_TIMEOUT_S`(3 s)、出站水位、ping、flush 屏障、帧长均未改动），`plugin.yaml`/`pyproject.toml` 版本 1.3.3 → 1.3.4，`rui_compat` 维持 `">=0.8.1 <0.9.0"`。
+
 ### Added
 
 - `scripts/onboard_device.py` + `docs/onboard-device.md`：新设备一条命令接入。重写设备

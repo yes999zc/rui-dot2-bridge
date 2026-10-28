@@ -45,11 +45,12 @@ class ManifestLayoutTest(unittest.TestCase):
         self.assertEqual(plugin["trust"], "trusted")
         # rui 0.6.0 keeps the same plug/adapter contract, but the manifest now uses
         # rui-device/v1 `audio_defaults`, which a pre-0.6 loader rejects
-        # (DeviceManifest is extra="forbid"). 1.3.3 raises the lower bound to 0.8.1:
+        # (DeviceManifest is extra="forbid"). 1.3.3 raised the lower bound to 0.8.1
+        # and 1.3.4 keeps that window:
         # `audio_defaults.voice` is a 0.8.1 key, and both the 0.7.x line and 0.8.0
         # reject it, so those deployments stay on 1.3.2 (the last 0.7.x build)
         # instead of reaching an "extra inputs are not permitted" error.
-        self.assertEqual(plugin["version"], "1.3.3")
+        self.assertEqual(plugin["version"], "1.3.4")
         # 0.8.1-only window: the floor is the first release that parses
         # `audio_defaults.voice`; the ceiling still spans the next minor.
         self.assertEqual(plugin["rui_compat"], ">=0.8.1 <0.9.0")

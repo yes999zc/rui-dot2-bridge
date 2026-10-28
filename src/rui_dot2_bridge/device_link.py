@@ -52,12 +52,18 @@ AUDIO_QUEUE_CHUNKS = 64          # 64 x 80 ms ≈ 5 s of slack before dropping o
 CONFIG_CACHE = "device-log.jsonl"
 
 # P0b: one /data frame is 4096 B = 42.7 ms of 48 kHz mono S16. A healthy
-# localhost/LAN write returns in well under a millisecond; 0.75 s means ~17
+# localhost/LAN write returns in well under a millisecond; 1.0 s means ~23
 # frames of audio could not even be handed to the kernel, i.e. the device
 # stopped reading and the socket buffer is full. websockets' send() waits for
 # the transport to drain, so without this bound the ping write parks behind it
 # and ping_timeout never even starts (the 887 s zombie).
-WRITE_TIMEOUT_S = 0.75
+#
+# 1.3.4 raises the bound from 0.75 s to 1.0 s on real-device evidence:
+# 2026-10-28 19:20:38 dot2-b hit ONE 0.75 s stall while retrying on 2.4 GHz;
+# the old bound aborted /data and the link needed 50.6 s to resume (redial +
+# register + prime). A WiFi retry burst is not a dead device, so 1.0 s
+# tolerates one such stall and still aborts an unbounded write.
+WRITE_TIMEOUT_S = 1.0
 # A refusal (bad register) must reach the device, but the peer might already be
 # gone: never let the error close hold the handler for websockets' 10 s default.
 CLOSE_TIMEOUT_S = 1.0
@@ -436,7 +442,7 @@ class DeviceLink:
         flight, and a device that is demonstrably alive must not lose its
         registration because /control happened to be quiet for a window. A
         single stalled *write* is caught by the bounded writes above (control
-        3 s, /data 0.75 s + watermark); this watchdog exists for the case where
+        3 s, /data 1.0 s + watermark); this watchdog exists for the case where
         no write is even attempted and the sockets look open forever.
 
         The 887 s zombie had 887 s with no received packet on either plane, so

@@ -7,7 +7,7 @@
 
 [![License: MIT](https://img.shields.io/github/license/yes999zc/rui-dot2-bridge?style=flat-square)](LICENSE)
 [![rui](https://img.shields.io/badge/rui-%3E%3D0.8.1%20%3C0.9.0-2f6f6a)](https://github.com/yes999zc/rui)
-[![plugin](https://img.shields.io/badge/plugin-1.3.3-b4744a)](src/rui_dot2_bridge/plugin.yaml)
+[![plugin](https://img.shields.io/badge/plugin-1.3.4-b4744a)](src/rui_dot2_bridge/plugin.yaml)
 
 </div>
 
@@ -118,7 +118,7 @@ python scripts/onboard_device.py --device-id dot2-b --rui http://<your-rui>:8080
 
 | rui 核心 | 本插件 | 说明 |
 |---|---|---|
-| **0.8.1**（当前） | **1.3.3** | 推荐；核心 + 外置插件目录（声学时序走 manifest 的 `audio_defaults.voice`） |
+| **0.8.1**（当前） | **1.3.4** | 推荐；核心 + 外置插件目录（声学时序走 manifest 的 `audio_defaults.voice`） |
 | 0.7.9（历史） | 1.3.2 | 0.7.x 线的最后可用版本（无 `voice` 块） |
 | 0.7.4（历史） | 1.3.1 | 外置插件同样可用 |
 
@@ -278,7 +278,7 @@ No ffmpeg build needed (the image ships it)
 
 | rui core | This plug | Notes |
 |---|---|---|
-| **0.8.1** (current) | **1.3.3** | Recommended; core image + external plug directory (acoustic timing comes from the manifest's `audio_defaults.voice`) |
+| **0.8.1** (current) | **1.3.4** | Recommended; core image + external plug directory (acoustic timing comes from the manifest's `audio_defaults.voice`) |
 | 0.7.9 (historical) | 1.3.2 | Last build that loads on the 0.7.x line (no `voice` block) |
 | 0.7.4 (historical) | 1.3.1 | The external plug works the same way |
 

@@ -519,6 +519,62 @@ class SendGuardTest(unittest.IsolatedAsyncioTestCase):
                 stable_since = None
             await asyncio.sleep(0.02)
 
+    async def _send_chunk_while_data_send_stalls(self, stall_s: float):
+        """Send one PCM chunk while the /data transport's send() parks for stall_s.
+
+        Only the write is faked (an event the loop releases after ``stall_s``):
+        the real link, /control and /data sockets stay up, so the guard's
+        identity checks and link state are the ones under test. Returns
+        ``(accepted, conn)`` where ``conn`` is the socket that was written to.
+        """
+        conn = self.link._data
+        self.assertIsNotNone(conn)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def stalled_send(frame: bytes) -> None:
+            entered.set()
+            await release.wait()
+
+        loop = asyncio.get_running_loop()
+        with mock.patch.object(conn, "send", stalled_send):
+            task = asyncio.create_task(self.link.send_pcm(bytes(SPEAKER_CHUNK_BYTES)))
+            await asyncio.wait_for(entered.wait(), 1.0)
+            timer = loop.call_later(stall_s, release.set)
+            try:
+                ok = await asyncio.wait_for(task, stall_s + 2.0)
+            finally:
+                timer.cancel()
+                release.set()
+        return ok, conn
+
+    async def test_short_write_stall_does_not_abort_data_plane(self) -> None:
+        """1.3.4: a 0.9 s stall is a WiFi retry burst, not a dead device.
+
+        Real-device basis: 2026-10-28 19:20:38 dot2-b, one 0.75 s stall during
+        2.4 GHz retries tripped the old 0.75 s bound and cost a 50.6 s resume.
+        """
+        self.assertEqual(device_link_module.WRITE_TIMEOUT_S, 1.0)
+        async with self._control():
+            async with self._data():
+                ok, conn = await self._send_chunk_while_data_send_stalls(0.9)
+
+                self.assertIs(ok, True)
+                self.assertIs(self.link._data, conn)
+                self.assertTrue(self.link.connected.is_set())
+                self.assertEqual(self.link.stats.speaker_frames, 1)
+
+    async def test_write_stall_beyond_one_second_still_aborts(self) -> None:
+        """1.3.4: the bound is a tolerance, not an unbounded write."""
+        async with self._control():
+            async with self._data():
+                ok, conn = await self._send_chunk_while_data_send_stalls(1.2)
+
+                self.assertIs(ok, False)
+                self.assertIsNone(self.link._data)
+                self.assertFalse(self.link.connected.is_set())
+                self.assertEqual(self.link.stats.speaker_frames, 0)
+
     async def test_stalled_data_write_times_out_and_aborts(self) -> None:
         with (
             mock.patch.object(device_link_module, "WRITE_TIMEOUT_S", 0.25),
