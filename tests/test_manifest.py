@@ -9,14 +9,25 @@ real core loader, which is the authoritative check.
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
 import yaml
+from packaging.specifiers import SpecifierSet
 
 import rui_dot2_bridge.adapter as adapter_module
 
 PACKAGE = Path(adapter_module.__file__).resolve().parent
+
+
+def _manifest() -> dict:
+    return yaml.safe_load((PACKAGE / "plugin.yaml").read_text(encoding="utf-8"))
+
+
+def _window(compat: str) -> SpecifierSet:
+    """rui manifests separate comparators with spaces; PEP 440 wants commas."""
+    return SpecifierSet(re.sub(r"\s+(?=[<>=!~])", ",", compat.strip()))
 
 
 class ManifestLayoutTest(unittest.TestCase):
@@ -34,12 +45,13 @@ class ManifestLayoutTest(unittest.TestCase):
         self.assertEqual(plugin["trust"], "trusted")
         # rui 0.6.0 keeps the same plug/adapter contract, but the manifest now uses
         # rui-device/v1 `audio_defaults`, which a pre-0.6 loader rejects
-        # (DeviceManifest is extra="forbid"). The lower bound therefore states the
-        # real requirement (0.6.0+) instead of letting an old core through to a
-        # confusing "extra inputs are not permitted" error.
-        self.assertEqual(plugin["version"], "1.3.1")
-        # The ceiling tracks the 0.7.x line: a rui minor bump must not refuse the plug.
-        self.assertEqual(plugin["rui_compat"], ">=0.6.0 <0.8.0")
+        # (DeviceManifest is extra="forbid"). 1.3.2 raises the lower bound to 0.7.0:
+        # the dual window covers the 0.7.x and 0.8.x lines, and 0.6.x deployments stay
+        # on 1.3.1 instead of reaching a "extra inputs are not permitted" error.
+        self.assertEqual(plugin["version"], "1.3.2")
+        # Dual window: 0.7.x and 0.8.x must both pass the loader's range check, so a
+        # rui minor bump does not refuse the plug.
+        self.assertEqual(plugin["rui_compat"], ">=0.7.0 <0.9.0")
         self.assertEqual(plugin["devices"], ["devices/rs03qr.yaml"])
 
     def test_device_yaml_fields(self) -> None:
@@ -135,6 +147,7 @@ class RealLoaderTest(unittest.TestCase):
 
     def test_core_loader_accepts_the_manifest(self) -> None:
         try:
+            import rui
             from rui.plugins.loader import load_plugin
             from rui.plugins.models import DeviceManifest
         except Exception as exc:  # noqa: BLE001 - optional dependency
@@ -144,6 +157,14 @@ class RealLoaderTest(unittest.TestCase):
             # interpreter cannot read rui-device/v1 audio_defaults (it rejects
             # unknown keys, by design).
             self.skipTest("installed rui predates the 0.6 audio_defaults field")
+        compat = _manifest()["rui_compat"]
+        if not _window(compat).contains(rui.__version__):
+            # 1.3.2 ships a dual window (>=0.7.0 <0.9.0). The loader refuses an
+            # out-of-range manifest by design, so a dev venv still on 0.6.x cannot
+            # exercise this path; test_manifest_compat covers the range itself.
+            self.skipTest(
+                f"installed rui {rui.__version__} is outside the manifest window {compat}"
+            )
         plugin = load_plugin(PACKAGE)
         self.assertEqual(plugin.id, "dot2-echomuse")
         self.assertEqual(str(plugin.trust), "trusted")

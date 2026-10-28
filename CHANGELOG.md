@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.3.2] - 2026-10-28
+
+### Changed
+
+- 插件版本 1.3.1 → **1.3.2**；`rui_compat` 从 `">=0.6.0 <0.8.0"` 改为 **`">=0.7.0 <0.9.0"`**
+  （B3a 双窗口：一条 range 同时覆盖 **0.7.x 与 0.8.x** 两条发布线，而不是只跟一个 minor）。
+  上界提前跨到 0.8.x，避免下一次 rui minor 让 loader 拒载整个插件、每台 Dot 2 都没有 adapter。
+  下界抬到 0.7.0：0.6.x 部署继续停留在 **1.3.1**（其窗口 `">=0.6.0 <0.8.0"` 明确接受 0.6.x），
+  本版本不向 0.6 线回移。
+- `devices/rs03qr.yaml` 的 `compatibility.tested_with` 补 **`0.7.9`**（契约 C-001 的 consumer 版本）。
+
+### Docs
+
+- README（中英）同步：版本徽章、兼容窗口（`>=0.7.0 <0.9.0`）、兼容矩阵的插件版本列。
+- `tests/test_manifest.py` / `tests/test_manifest_compat.py`：版本与窗口断言、`CURRENT_RUI`
+  注释同步（`0.7.2` 仍落在新窗口内，继续作为回归 pin）。
+- `docs/contracts/C-001-per-device-params.md`：版本口径从「不 bump / 不改窗口」改为
+  「B3a dual-window 1.3.2，tag/release pending 9哥 approval」。
+
+### Notes
+
+- adapter 无代码改动：1.3.2 只动 manifest 与文档，运行行为与 1.3.1 完全一致。
+- **不发 tag、不做 release**：等 9 哥批准后再打 `v1.3.2`；README 的三行启动仍指向已发布的
+  `v1.3.1` tag 与 0.7.8 镜像 digest。
+
 ## [1.3.1] - 2026-10-26
 
 ### Changed

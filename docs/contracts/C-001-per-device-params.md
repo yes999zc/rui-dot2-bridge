@@ -1,8 +1,8 @@
 # C-001 — dot2 每设备参数契约（v1）
 
 - 日期：2026-10-28
-- provider：`rui-dot2-bridge` 1.3.1（plug 源码挂载；**本契约不发版、不改 `rui_compat`**）
-- consumer：`rui` 0.7.9（`rui_compat: ">=0.6.0 <0.8.0"` 不变）
+- provider：`rui-dot2-bridge` 1.3.2（plug 源码挂载；**B3a dual-window 1.3.2，tag/release pending 9哥 approval**）
+- consumer：`rui` 0.7.9（`rui_compat: ">=0.7.0 <0.9.0"` — B3a 双窗口，同时覆盖 0.7.x / 0.8.x）
 - 背景：`docs/backlog-0.8.md` §c C-0。第 2 台起同宿主多 plane，5 项原 env-only 配置必须能按设备取。
 - 落点：provider `src/rui_dot2_bridge/adapter.py` + `devices/rs03qr.yaml`；consumer 只把 `devices[].params` 原样传入（`DeviceConfig.params` 已是 `dict[str, Any]`，无需改 rui core）。
 
@@ -50,7 +50,8 @@ env 只作 fallback：现网单台 override 继续生效，不强制迁移。
 - 无破坏性接口：`build(dev, cfg)` 签名不变；新增 4 个**可选** ctor kwarg。
 - 现网单台：env 优先，路径/端口/阈值与 0.7.9 完全一致。
 - 回滚：revert provider 一个 commit 即回到 env-only；consumer 无需回滚（无 core 行为变更）。
-- 版本：不 bump plug 版本、不打 tag、不改 `rui_compat` 窗口；生产部署需 9 哥单独批准。
+- 版本：B3a dual-window 1.3.2，tag/release pending 9哥 approval（窗口 `">=0.7.0 <0.9.0"` 覆盖
+  0.7.x / 0.8.x，0.6.x 部署停在 1.3.1）；生产部署需 9 哥单独批准。
 
 ## 6. 验收（provider 侧自动测）
 
