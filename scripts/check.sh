@@ -24,7 +24,7 @@ echo "== config"
 "$PY" - <<'PY'
 import os, sys
 sys.path.insert(0, str(__import__("pathlib").Path("../house-ear/src").resolve()))
-from house_ear.config import load_config
+from rui.config import load_config
 cfg = load_config("dev/rui/config.yaml")
 dev = next((d for d in cfg.devices if d.adapter == "dot2"), None)
 cap = float(os.environ.get("DOT2_VOLUME_CAP", "100"))
