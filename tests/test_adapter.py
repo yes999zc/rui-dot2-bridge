@@ -8,15 +8,19 @@ whole 4096-byte speaker periods, an EOS after the reply goes quiet, and a hard
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 import unittest
 from unittest import mock
 
+import websockets.asyncio.client as ws_client
 from rui.device.contract import Capability
 
+import rui_dot2_bridge.adapter as adapter_module
 from rui_dot2_bridge.adapter import Dot2Adapter
-from rui_dot2_bridge.frames import SPEAKER_CHUNK_BYTES
+from rui_dot2_bridge.device_link import DeviceLink
+from rui_dot2_bridge.frames import FRAME_MIC, SPEAKER_CHUNK_BYTES
 from rui_dot2_bridge.volume import capped_level
 
 
@@ -27,12 +31,18 @@ class FakeInfo:
 
 
 class FakeStats:
-    data_connects = 1
-    rtt_ms = 5.0
-    mic_frames = 0
-    dropped_audio = 0
-    wake_events = 0
-    invalid_wakes = 0
+    def __init__(self) -> None:
+        self.data_connects = 1
+        self.rtt_ms = 5.0
+        self.mic_frames = 0
+        self.dropped_audio = 0
+        self.wake_events = 0
+        self.invalid_wakes = 0
+        self.half_open_drops = 0
+        # A fake link models a live microphone by default: health() requires a
+        # data-plane sample fresher than SPEAKER_STALE_S (P0b-C2).
+        self.last_mic_at = time.monotonic()
+        self.last_pcm_sent_at = 0.0
 
 
 class FakeLink:
@@ -47,6 +57,7 @@ class FakeLink:
         self.connected = asyncio.Event()
         self.connected.set()
         self.stats = FakeStats()
+        self.data_plane_up = True
         self.info = FakeInfo()
         self.volume_level = 38
         self.reported_level = 38
@@ -225,6 +236,157 @@ class VolumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(health["connected"])
         self.assertEqual(health["device_id"], "dot2")
         self.assertIn("1 mic + 0 ref", health["profile"])
+
+
+class HealthFreshnessTest(unittest.IsolatedAsyncioTestCase):
+    """P0b-C2: `connected` is a data-plane fact, not a sticky socket flag.
+
+    The dot2 /data socket can stay open while the device is gone (power cut,
+    firmware hang); `data_connects > 0` then says "it connected once", which is
+    what made `speaker_connected` stick for 887 s in the field. Health therefore
+    needs a recent received mic frame or a recent successful PCM write.
+    """
+
+    def _adapter(self) -> Dot2Adapter:
+        adapter = make_adapter()
+        return adapter
+
+    def test_a_silent_data_plane_goes_disconnected_after_the_stale_window(self) -> None:
+        adapter = self._adapter()
+        link = adapter._link
+        assert adapter.health()["connected"] is True
+
+        with mock.patch.object(adapter_module, "SPEAKER_STALE_S", 0.3):
+            # Power cut: the socket still looks open, but nothing arrives/sends.
+            link.stats.last_mic_at = time.monotonic() - 0.5
+            link.stats.last_pcm_sent_at = 0.0
+            health = adapter.health()
+            self.assertFalse(health["connected"])
+            self.assertFalse(health["speaker_fresh"])
+            self.assertIsNotNone(health["data_idle_ms"])
+
+            # A single received mic frame proves the plane again.
+            link.stats.last_mic_at = time.monotonic()
+            self.assertTrue(adapter.health()["connected"])
+
+            # ...and so does a successfully written PCM frame on an idle mic.
+            link.stats.last_mic_at = time.monotonic() - 0.5
+            link.stats.last_pcm_sent_at = time.monotonic()
+            self.assertTrue(adapter.health()["connected"])
+
+    def test_no_data_plane_or_a_cleared_gate_is_disconnected_even_when_fresh(self) -> None:
+        adapter = self._adapter()
+        link = adapter._link
+        self.assertTrue(adapter.health()["connected"])
+
+        link.data_plane_up = False
+        health = adapter.health()
+        self.assertFalse(health["connected"])
+        self.assertFalse(health["data_plane"])
+
+        link.data_plane_up = True
+        link.connected.clear()
+        self.assertFalse(adapter.health()["connected"])
+
+
+class AdapterLinkFreshnessTest(unittest.IsolatedAsyncioTestCase):
+    """P0b-C2 over a real DeviceLink: power cut flips health, reconnect restores it.
+
+    The fake-link tests above pin the arithmetic; this one pins the wiring that
+    the house actually sees: a real `DeviceLink` feeds `stats.last_mic_at`, and
+    `/health` (via the audio plane's `speaker_connected`) stops claiming a live
+    speaker once the data plane is gone and the last sample is stale.
+    """
+
+    async def asyncSetUp(self) -> None:
+        self.link = DeviceLink(
+            tls_port=None,
+            plain_port=0,
+            token="secret",
+            volume_cap_percent=30.0,
+            push_config=True,
+        )
+        await self.link.start()
+        self.port = self.link.bound_ports["plain"]
+        self.adapter = Dot2Adapter("dot2", host="127.0.0.1", secrets_dir="secrets")
+        self.adapter._link = self.link
+        self.addCleanup(self.link.stop)
+        self._sockets: list = []
+
+    async def _register(self):
+        ctl = await ws_client.connect(
+            f"ws://127.0.0.1:{self.port}/control",
+            additional_headers={"X-EM-Token": "secret"},
+        )
+        await ctl.send(
+            json.dumps(
+                {
+                    "type": "register",
+                    "device_id": "D090",
+                    "version": "v2.18.1",
+                    "capabilities": ["mic", "speaker"],
+                }
+            )
+        )
+        for _ in range(4):  # ack, volume_set, config, mic_start
+            await asyncio.wait_for(ctl.recv(), 2)
+        self._sockets.append(ctl)
+        return ctl
+
+    async def _mic(self, seq: int = 1):
+        data = await ws_client.connect(
+            f"ws://127.0.0.1:{self.port}/data",
+            additional_headers={"X-EM-Token": "secret"},
+        )
+        await asyncio.sleep(0.05)
+        await data.send(bytes([FRAME_MIC]) + seq.to_bytes(2, "big") + bytes(320))
+        self._sockets.append(data)
+        return data
+
+    async def _wait_until(self, predicate, timeout: float = 2.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            await asyncio.sleep(0.02)
+        self.fail("condition not reached in time")
+
+    async def asyncTearDown(self) -> None:
+        for ws in self._sockets:
+            ws.transport.abort()
+
+    async def test_a_power_cut_flips_health_and_a_reconnect_restores_it(self) -> None:
+        with mock.patch.object(adapter_module, "SPEAKER_STALE_S", 0.4):
+            ctl = await self._register()
+            data = await self._mic()
+            await self._wait_until(lambda: self.adapter.health()["connected"])
+            self.assertTrue(self.adapter.health()["speaker_fresh"])
+
+            # Power cut: both sockets vanish and nothing more arrives.
+            ctl.transport.abort()
+            data.transport.abort()
+            await self._wait_until(lambda: not self.link.connected.is_set())
+            health = self.adapter.health()
+            self.assertFalse(health["connected"])
+            self.assertFalse(health["data_plane"])
+
+            # The device dials again (fresh register + fresh data plane).
+            await self._register()
+            await self._mic(seq=2)
+            await self._wait_until(lambda: self.adapter.health()["connected"])
+            self.assertTrue(self.adapter.health()["connected"])
+
+    async def test_a_live_socket_with_a_quiet_data_plane_goes_stale(self) -> None:
+        """A hung /data (socket open, no frames) must not stay green forever."""
+        with mock.patch.object(adapter_module, "SPEAKER_STALE_S", 0.4):
+            await self._register()
+            await self._mic()
+            await self._wait_until(lambda: self.adapter.health()["connected"])
+            await asyncio.sleep(0.6)  # no mic frame, no playback write
+            health = self.adapter.health()
+            self.assertTrue(health["data_plane"], "the socket is still adopted")
+            self.assertFalse(health["speaker_fresh"])
+            self.assertFalse(health["connected"])
 
 
 class LedTest(unittest.IsolatedAsyncioTestCase):

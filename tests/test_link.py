@@ -914,6 +914,155 @@ class AbnormalCloseResetTest(unittest.IsolatedAsyncioTestCase):
         await data2.close()
 
 
+class HalfOpenWatchdogTest(unittest.IsolatedAsyncioTestCase):
+    """P0b-C1: a peer that stops reading/replying must not stay connected for 887 s.
+
+    websockets' own keepalive cannot catch this: ``ping()`` awaits the write and
+    only then starts ``ping_timeout``, so a full socket buffer parks the keepalive
+    forever. The watchdog is independent of that write: it looks at *received*
+    traffic only, per plane, and drops the link when no plane has delivered
+    anything for ``HALF_OPEN_TIMEOUT_S``. A device that is merely idle still
+    streams mic frames every 80 ms and answers a 15 s ping, so it never trips the
+    threshold.
+    """
+
+    async def asyncSetUp(self) -> None:
+        # The watchdog reads its interval at each sleep, so it must be patched
+        # before start(): the first sleep is already in flight otherwise.
+        interval = mock.patch.object(device_link_module, "WATCHDOG_INTERVAL_S", 0.05)
+        interval.start()
+        self.addCleanup(interval.stop)
+        self.link = DeviceLink(
+            tls_port=None,
+            plain_port=0,
+            token="secret",
+            volume_cap_percent=30.0,
+            push_config=True,
+        )
+        await self.link.start()
+        self.port = self.link.bound_ports["plain"]
+        self.addCleanup(self.link.stop)
+
+    async def _register_control(self):
+        ws = await ws_client.connect(
+            f"ws://127.0.0.1:{self.port}/control",
+            additional_headers={"X-EM-Token": "secret"},
+        )
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "register",
+                    "device_id": "D090",
+                    "version": "v2.18.1",
+                    "capabilities": ["mic", "speaker"],
+                }
+            )
+        )
+        for _ in range(4):  # ack, volume_set, config, mic_start
+            await asyncio.wait_for(ws.recv(), 2)
+        return ws
+
+    async def _open_data(self):
+        ws = await ws_client.connect(
+            f"ws://127.0.0.1:{self.port}/data",
+            additional_headers={"X-EM-Token": "secret"},
+        )
+        await asyncio.sleep(0.05)
+        return ws
+
+    async def _wait_until(self, predicate, timeout: float = 3.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            await asyncio.sleep(0.02)
+        self.fail("condition not reached in time")
+
+    async def _expect_closed(self, ws, timeout: float = 3.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                await asyncio.wait_for(ws.recv(), max(0.01, deadline - time.monotonic()))
+            except ConnectionClosed:
+                return
+            except TimeoutError:
+                break
+        self.fail("bridge did not close the socket")
+
+    async def test_a_device_that_goes_silent_after_register_is_dropped(self) -> None:
+        """register -> stop reading/replying -> watchdog closes, not 887 s later."""
+        with (
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.4),
+        ):
+            ws = await self._register_control()
+            started = time.monotonic()
+            with self.assertLogs("rui_dot2_bridge.device_link", level="WARNING") as captured:
+                await self._expect_closed(ws, timeout=3.0)
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 3.0, "the watchdog must not wait on a write")
+        self.assertIsNone(self.link._control)
+        self.assertFalse(self.link.connected.is_set())
+        self.assertEqual(self.link.stats.half_open_drops, 1)
+        line = "\n".join(captured.output)
+        self.assertIn("half-open", line)
+        self.assertIn("rx=", line)
+        self.assertIn("tx=", line)
+
+    async def test_an_idle_device_that_still_answers_pings_is_not_killed(self) -> None:
+        """No media, but a pong every ping: the link is idle, not half-open."""
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 0.05),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.3),
+        ):
+            ws = await self._register_control()
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                try:
+                    message = json.loads(
+                        await asyncio.wait_for(ws.recv(), max(0.01, deadline - time.monotonic()))
+                    )
+                except TimeoutError:
+                    break
+                if message.get("type") == "ping":
+                    await ws.send(json.dumps({"type": "pong", "id": message["id"]}))
+
+            self.assertIsNotNone(self.link._control)
+            self.assertTrue(self.link.connected.is_set())
+            self.assertEqual(self.link.stats.half_open_drops, 0)
+        await ws.close()
+
+    async def test_a_device_that_only_streams_mic_is_not_half_open(self) -> None:
+        """A late/missing pong must not kill a speaker whose /data is streaming.
+
+        The 80 ms mic stream is the strongest liveness signal the device has; an
+        idle room looks exactly like this (no wake, no playback, no pong yet).
+        """
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 0.05),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.3),
+        ):
+            ctl = await self._register_control()
+            data = await self._open_data()
+            await self._wait_until(lambda: self.link.connected.is_set())
+            deadline = time.monotonic() + 1.0
+            seq = 0
+            while time.monotonic() < deadline:
+                await data.send(bytes([FRAME_MIC]) + seq.to_bytes(2, "big") + bytes(320))
+                seq += 1
+                await asyncio.sleep(0.02)
+
+            # > 2x the timeout with zero pongs: mic traffic alone kept it alive.
+            self.assertIsNotNone(self.link._control)
+            self.assertIsNotNone(self.link._data)
+            self.assertTrue(self.link.connected.is_set())
+            self.assertEqual(self.link.stats.half_open_drops, 0)
+        # Drop the sockets the way a device cut would: a graceful close while a
+        # 50 ms ping loop is still writing can park in websockets' 10 s handshake.
+        ctl.transport.abort()
+        data.transport.abort()
+
+
 class VolumeMathTest(unittest.TestCase):
     def test_cap_holds_against_requests(self) -> None:
         from rui_dot2_bridge.volume import clamp_percent, percent_to_level

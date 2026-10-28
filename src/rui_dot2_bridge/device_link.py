@@ -69,6 +69,25 @@ PONG_WAITER_TTL_S = 60.0
 # next register's ack waits on this same lock, so an unbounded send is a stale
 # queue that can hold a reconnect hostage.
 CONTROL_WRITE_TIMEOUT_S = 3.0
+# P0b-C1: websockets' keepalive cannot see a half-open socket: ping() awaits the
+# write and only then starts ping_timeout, so a full send buffer parks the probe
+# forever (the 887 s zombie). This is the independent backstop: a link on which
+# NO plane delivered a control frame, a pong or a /data frame for this long is
+# gone, and dropping it lets the device dial again (registering is the only way
+# back to a usable control plane). 45 s = three missed 15 s pings; the mic stream
+# normally delivers a frame every 80 ms, so an idle room never reaches it.
+HALF_OPEN_TIMEOUT_S = 45.0
+# Check a few times a second is pointless; 5 s bounds the detection lag to one
+# interval while adding one wakeup per 5 s to an otherwise idle bridge.
+WATCHDOG_INTERVAL_S = 5.0
+# websockets' own keepalive, made explicit: a ping is a write, so it can only be
+# a supplement to the watchdog, never the mechanism. write_limit is the
+# high-water mark of the per-connection write buffer (~0.68 s of 48 kHz mono);
+# beyond it send() applies backpressure, and the bounded writes above then abort
+# the stalled plane instead of buffering seconds of audio.
+KEEPALIVE_PING_INTERVAL_S = 20.0
+KEEPALIVE_PING_TIMEOUT_S = 40.0
+WRITE_LIMIT_BYTES = 32 * 1024
 # The link has no outbound queue; 256 KiB is 2.73 s of 48 kHz mono S16, the
 # most PCM we are willing to have accepted-but-unwritten across concurrent
 # send_pcm calls. Beyond that the device is gone: abort and let it reconnect
@@ -86,6 +105,10 @@ class LinkStats:
     dropped_audio: int = 0
     rtt_ms: float | None = None
     last_mic_at: float = 0.0
+    # Last /data frame actually written to the device (monotonic). Together with
+    # last_mic_at this is the adapter's proof that the data plane is alive.
+    last_pcm_sent_at: float = 0.0
+    half_open_drops: int = 0
     wake_events: int = 0
     invalid_wakes: int = 0
     shadow_crossings: int = 0
@@ -117,6 +140,10 @@ class _ConnMeter:
     peer: str = ""
     rx_bytes: int = 0
     tx_bytes: int = 0
+    # Last inbound frame on THIS socket (monotonic). The half-open watchdog reads
+    # only this: a successful write proves the kernel accepted bytes, not that
+    # the device read them.
+    last_rx_at: float = field(default_factory=time.monotonic)
     ping_task: asyncio.Task[None] | None = None
     # True once the post-mortem for this connection was already logged (a
     # refusal names its reason), so _drop_control does not say it twice.
@@ -237,6 +264,7 @@ class DeviceLink:
         # the single event loop (no await between read and update).
         self._inflight_bytes = 0
         self._ping_task: asyncio.Task[None] | None = None
+        self._watchdog_task: asyncio.Task[None] | None = None
         self._ping_seq = 0
         self._pong_waiters: dict[int, float] = {}
         self._pong_events: dict[int, asyncio.Event] = {}
@@ -265,8 +293,9 @@ class DeviceLink:
                 self.tls_port,
                 ssl=context,
                 max_size=1 << 20,
-                ping_interval=20,
-                ping_timeout=40,
+                ping_interval=KEEPALIVE_PING_INTERVAL_S,
+                ping_timeout=KEEPALIVE_PING_TIMEOUT_S,
+                write_limit=WRITE_LIMIT_BYTES,
             )
             self._servers.append(server)
             self.bound_ports["tls"] = self._port_of(server)
@@ -277,15 +306,31 @@ class DeviceLink:
                 self.bind_host,
                 self.plain_port,
                 max_size=1 << 20,
-                ping_interval=20,
-                ping_timeout=40,
+                ping_interval=KEEPALIVE_PING_INTERVAL_S,
+                ping_timeout=KEEPALIVE_PING_TIMEOUT_S,
+                write_limit=WRITE_LIMIT_BYTES,
             )
             self._servers.append(server)
             self.bound_ports["plain"] = self._port_of(server)
             log.info("dot2 link: ws listening on %s", self.bound_ports["plain"])
+        # One watchdog for the whole link, independent of every socket write:
+        # it only counts frames/pongs that actually arrived. Started after the
+        # servers so a connection can never be adopted without a monitor.
+        if self._watchdog_task is None or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(
+                self._watchdog_loop(), name="dot2-watchdog"
+            )
 
     async def stop(self) -> None:
         self._closing = True
+        watchdog = self._watchdog_task
+        if watchdog is not None:
+            watchdog.cancel()
+            try:
+                await watchdog
+            except asyncio.CancelledError:
+                pass
+            self._watchdog_task = None
         if self._ping_task is not None:
             self._ping_task.cancel()
             self._ping_task = None
@@ -347,6 +392,86 @@ class DeviceLink:
         meter = _ConnMeter(direction=direction, peer=str(conn.remote_address))
         self._meters[id(conn)] = meter
         return meter
+
+    # ---------------------------------------------------------- liveness (P0b-C1)
+    @property
+    def control_plane_up(self) -> bool:
+        """True while a registered /control socket is adopted."""
+        return self._control is not None
+
+    @property
+    def data_plane_up(self) -> bool:
+        """True while a /data socket is adopted (the speaker can be written to)."""
+        return self._data is not None
+
+    async def _watchdog_loop(self) -> None:
+        """Poll the receive side of the link; never touch the write path.
+
+        A dedicated task (instead of per-connection timers) means one monitor
+        for both planes and it cannot be blocked by a send() parked on a full
+        buffer - the exact failure the websockets keepalive has.
+        """
+        while True:
+            try:
+                await asyncio.sleep(WATCHDOG_INTERVAL_S)
+            except asyncio.CancelledError:
+                raise
+            try:
+                self._enforce_half_open()
+            except Exception:  # noqa: BLE001 - a monitor bug must not die silently
+                log.exception("dot2 link: half-open watchdog failed")
+
+    def _enforce_half_open(self) -> None:
+        """Drop the link when no plane has received anything for the timeout.
+
+        Liveness is evaluated across the whole link, not per socket: an idle
+        speaker still streams mic frames every 80 ms even while a pong is in
+        flight, and a device that is demonstrably alive must not lose its
+        registration because /control happened to be quiet for a window. A
+        single stalled *write* is caught by the bounded writes above (control
+        3 s, /data 0.75 s + watermark); this watchdog exists for the case where
+        no write is even attempted and the sockets look open forever.
+
+        The 887 s zombie had 887 s with no received packet on either plane, so
+        the "every plane silent" rule covers it without adding a false-positive
+        path for a live, quiet room.
+        """
+        if self._closing:
+            return
+        now = time.monotonic()
+        planes: list[tuple[ServerConnection, _ConnMeter, float]] = []
+        for conn in (self._control, self._data):
+            if conn is None:
+                continue
+            meter = self._meters.get(id(conn))
+            if meter is None:
+                continue
+            planes.append((conn, meter, now - meter.last_rx_at))
+        if not planes:
+            return
+        if not all(age > HALF_OPEN_TIMEOUT_S for _conn, _meter, age in planes):
+            return
+        detail = "; ".join(
+            f"dir={meter.direction} silent={age:.1f}s rx={meter.rx_bytes}B tx={meter.tx_bytes}B"
+            for _conn, meter, age in planes
+        )
+        reason = (
+            f"half-open: no frame or pong on any plane for > {HALF_OPEN_TIMEOUT_S:.1f} s "
+            f"({detail})"
+        )
+        self.stats.half_open_drops += 1
+        log.warning(
+            "dot2 link: %s (%s); aborting the link so the device dials again",
+            reason,
+            self.device_id,
+        )
+        control = self._control
+        if control is not None:
+            # Tears down /data as well; both belong to the same dead link.
+            self._lose_control(control, reason)
+        data = self._data
+        if data is not None:
+            self._lose_data(data, reason, abort=True)
 
     def _abandon(self, conn: ServerConnection, code: int, reason: str) -> None:
         """Drop a socket without waiting for its close handshake.
@@ -574,6 +699,7 @@ class DeviceLink:
                 return
             async for raw in conn:
                 meter.rx_bytes += len(raw)
+                meter.last_rx_at = time.monotonic()
                 await self._on_control_message(raw)
         except ConnectionClosed as exc:
             closed = exc
@@ -615,6 +741,7 @@ class DeviceLink:
             meter.accounted = True
             return False
         meter.rx_bytes += len(raw)
+        meter.last_rx_at = time.monotonic()
         try:
             # errors="replace": a malformed frame reads as "not register" instead
             # of raising out of a handler that has not claimed the slot yet.
@@ -893,6 +1020,7 @@ class DeviceLink:
                 if not isinstance(raw, (bytes, bytearray)) or not raw:
                     continue
                 meter.rx_bytes += len(raw)
+                meter.last_rx_at = time.monotonic()
                 kind = raw[0]
                 payload = bytes(raw[1:])
                 if kind == FRAME_MIC:
@@ -1055,6 +1183,7 @@ class DeviceLink:
             meter = self._meters.get(id(conn))
             if meter is not None:
                 meter.tx_bytes += len(frame)
+            self.stats.last_pcm_sent_at = time.monotonic()
             return True
 
     async def send_pcm(self, pcm: bytes) -> bool:

@@ -47,6 +47,15 @@ from .volume import DEVICE_LEVEL_MAX, VOLUME_CAP_PERCENT, clamp_percent
 
 log = logging.getLogger(__name__)
 
+# P0b-C2: how old the last proof of a live data plane may be before `health()`
+# stops calling the speaker connected. The device streams mic frames every
+# 80 ms; a successfully written PCM frame is the other direction of the same
+# proof. 45 s matches the bridge watchdog (three missed 15 s pings), so a power
+# cut flips /health, and rui's healthcheck with it, inside the same window -
+# without making a quiet-but-healthy room look dead.
+SPEAKER_STALE_S = 45.0
+
+
 def _rechunk(pcm: bytes, channels: int, frame_ms: int) -> list[bytes]:
     """Cut an interleaved block into ``frame_ms`` pieces, never mid-sample-frame."""
     step = MIC_RATE * 2 * frame_ms // 1000 * channels
@@ -464,12 +473,40 @@ class Dot2Adapter(DeviceAdapter):
         await self._link.set_volume_percent(clamp_percent(percent, self.volume_cap_percent))
 
     def health(self) -> dict:
-        """The plane's `speaker_connected` and the console read this."""
+        """The plane's `speaker_connected` and the console read this.
+
+        `connected` used to be `Event.is_set() and data_connects > 0`, which is
+        sticky: a socket that stays open after a power cut keeps reporting true
+        for as long as TCP does (887 s in the field). It is now a freshness
+        claim: the gate is set, a data plane is actually adopted, and the last
+        proof of life (a received mic frame or a written PCM frame) is younger
+        than SPEAKER_STALE_S. The bridge watchdog normally drops the link first;
+        this covers a live control socket whose data plane went quiet.
+        """
         link = self._link
         if link is None:
             return {"connected": False, "error": "adapter not open"}
+        stats = link.stats
+        data_plane = bool(getattr(link, "data_plane_up", False))
+        last_mic = float(getattr(stats, "last_mic_at", 0.0) or 0.0)
+        last_pcm = float(getattr(stats, "last_pcm_sent_at", 0.0) or 0.0)
+        last_activity = max(last_mic, last_pcm)
+        idle_s = time.monotonic() - last_activity if last_activity > 0.0 else None
+        fresh = idle_s is not None and idle_s < SPEAKER_STALE_S
+        connected = (
+            link.connected.is_set()
+            and int(getattr(stats, "data_connects", 0)) > 0
+            and data_plane
+            and fresh
+        )
         return {
-            "connected": link.connected.is_set() and link.stats.data_connects > 0,
+            "connected": connected,
+            # Diagnostics for the console/log: why the flag above is what it is.
+            "data_plane": data_plane,
+            "speaker_fresh": fresh,
+            "data_idle_ms": None if idle_s is None else round(idle_s * 1000.0, 1),
+            "speaker_stale_s": SPEAKER_STALE_S,
+            "half_open_drops": int(getattr(stats, "half_open_drops", 0)),
             "device_id": link.info.device_id or self.device_id,
             "firmware": link.info.version,
             "ip": link.info.ip,
