@@ -291,6 +291,11 @@ class Dot2Adapter(DeviceAdapter):
             "playing": lambda: self._playing,
             "wake_queue": self._wakes,
             "wake_word_enabled": self.oww_on_device == "on",
+            # The link owns no outbound PCM queue: the half-sentence lives in
+            # `_frame_buffer` here. When the socket dies (write timeout, device
+            # close, controller stop) the link tells us so the tail cannot be
+            # prepended to the next reply after a reconnect.
+            "on_link_lost": self._on_link_lost,
         }
         self._inject_port = inject_port
         # +24 dB (the device default) clips normal speech; 18 dB keeps the peaks
@@ -584,6 +589,7 @@ class Dot2Adapter(DeviceAdapter):
     async def open(self) -> None:
         self._closed = False
         self._wakes.clear()
+        self._reset_stream_state()
         self._link_kwargs["mic_gain_db"] = self._mic_gain_db
         self._link = DeviceLink(**self._link_kwargs)  # type: ignore[arg-type]
         await self._link.start()
@@ -645,10 +651,42 @@ class Dot2Adapter(DeviceAdapter):
         if self._link is not None:
             await self._link.stop()
             self._link = None
+        self._reset_stream_state()
         # close() must be final: no event from before or after this may be drained
         # by rui after the device is gone (v1 section 4.2).
         self._wakes.clear()
         self._closed = True
+
+    def _on_link_lost(self, reason: str) -> None:
+        """Drop the in-flight half sentence; called by DeviceLink (sync)."""
+        if self._playing or self._frame_buffer or self._stream_started:
+            log.warning("dot2 adapter: link lost (%s); dropping buffered playback", reason)
+        self._reset_stream_state()
+
+    def _reset_stream_state(self) -> None:
+        """Forget a stream the previous connection never finished.
+
+        ``_frame_buffer`` is the only outbound queue (the link sends straight to
+        the socket), so a stale tail here is exactly what would replay into the
+        next connection. EOS and prebuffer tasks are derived from that state and
+        must be cancelled with it.
+        """
+        current = asyncio.current_task()
+        eos_task = self._eos_task
+        self._eos_task = None
+        if eos_task is not None and eos_task is not current:
+            eos_task.cancel()
+        prebuffer_task = self._prebuffer_task
+        self._prebuffer_task = None
+        if prebuffer_task is not None and prebuffer_task is not current:
+            prebuffer_task.cancel()
+        self._playing = False
+        self._stream_started = False
+        self._stream_bytes = 0
+        self._frame_buffer.clear()
+        # A dead link is not playing, so the uplink gate must open immediately.
+        self._last_play_at = None
+        self._flush_dump()
 
     def _record(self, pcm: bytes) -> None:
         if not self._record_path:
@@ -761,7 +799,11 @@ class Dot2Adapter(DeviceAdapter):
                 self._playing = True
                 self._schedule_eos()
                 return
-        await self._drain_frames()
+        if not await self._drain_frames():
+            # The data plane vanished under us; send_pcm dropped the chunks and
+            # reset the stream, so do not schedule an EOS for a dead link.
+            self._reset_stream_state()
+            return
         self._playing = True
         self._schedule_eos()
 
@@ -774,7 +816,8 @@ class Dot2Adapter(DeviceAdapter):
         if self._stream_started or not self._frame_buffer:
             return
         self._stream_started = True
-        await self._drain_frames()
+        if not await self._drain_frames():
+            self._reset_stream_state()
 
     def _flush_dump(self) -> None:
         if not self._dump_dir or not self._dump_buf:
@@ -788,14 +831,16 @@ class Dot2Adapter(DeviceAdapter):
         finally:
             self._dump_buf.clear()
 
-    async def _drain_frames(self) -> None:
+    async def _drain_frames(self) -> bool:
         assert self._link is not None
         if not self._stream_started:
-            return
+            return True
         while len(self._frame_buffer) >= SPEAKER_CHUNK_BYTES:
             chunk = bytes(self._frame_buffer[:SPEAKER_CHUNK_BYTES])
             del self._frame_buffer[:SPEAKER_CHUNK_BYTES]
-            await self._link.send_pcm(chunk)
+            if await self._link.send_pcm(chunk) is False:
+                return False
+        return True
 
     def _eos_delay(self) -> float:
         short_bytes = int(SPEAKER_RATE * 2 * SHORT_STREAM_S)
@@ -844,7 +889,9 @@ class Dot2Adapter(DeviceAdapter):
             if len(tail) < SPEAKER_CHUNK_BYTES:
                 tail += bytes(SPEAKER_CHUNK_BYTES - len(tail))
             self._frame_buffer.clear()
-            await self._link.send_pcm(tail)
+            if await self._link.send_pcm(tail) is False:
+                self._reset_stream_state()
+                return
         self._stream_bytes = 0
         await self._link.end_stream()
         self._flush_dump()

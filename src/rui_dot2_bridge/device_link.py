@@ -51,6 +51,30 @@ HANDSHAKE_TIMEOUT_S = 10.0
 AUDIO_QUEUE_CHUNKS = 64          # 64 x 80 ms ≈ 5 s of slack before dropping oldest
 CONFIG_CACHE = "device-log.jsonl"
 
+# P0b: one /data frame is 4096 B = 42.7 ms of 48 kHz mono S16. A healthy
+# localhost/LAN write returns in well under a millisecond; 0.75 s means ~17
+# frames of audio could not even be handed to the kernel, i.e. the device
+# stopped reading and the socket buffer is full. websockets' send() waits for
+# the transport to drain, so without this bound the ping write parks behind it
+# and ping_timeout never even starts (the 887 s zombie).
+WRITE_TIMEOUT_S = 0.75
+# A refusal (bad register) must reach the device, but the peer might already be
+# gone: never let the error close hold the handler for websockets' 10 s default.
+CLOSE_TIMEOUT_S = 1.0
+# A pong for a connection the device abandoned can never arrive; a waiter older
+# than this is forgotten instead of accumulating for the life of the process.
+PONG_WAITER_TTL_S = 60.0
+# A control frame is tiny: if it cannot even be handed to the kernel in 3 s the
+# peer stopped reading long ago. The bound matters beyond the write itself - the
+# next register's ack waits on this same lock, so an unbounded send is a stale
+# queue that can hold a reconnect hostage.
+CONTROL_WRITE_TIMEOUT_S = 3.0
+# The link has no outbound queue; 256 KiB is 2.73 s of 48 kHz mono S16, the
+# most PCM we are willing to have accepted-but-unwritten across concurrent
+# send_pcm calls. Beyond that the device is gone: abort and let it reconnect
+# rather than buffering seconds of audio that could replay after a reconnect.
+SEND_WATERMARK_BYTES = 256 * 1024
+
 
 @dataclass
 class LinkStats:
@@ -77,6 +101,26 @@ class DeviceInfoReport:
     ip: str = ""
     base_os: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class _ConnMeter:
+    """Per-connection counters and tasks, so a close line can be honest.
+
+    Keyed by ``id(conn)`` while that connection's handler runs. A reconnect that
+    lands before the bridge notices the old socket died gives two incarnations
+    of the same plane, and each keeps its own counter and ping task: neither may
+    borrow (or tear down) the other's.
+    """
+
+    direction: str
+    peer: str = ""
+    rx_bytes: int = 0
+    tx_bytes: int = 0
+    ping_task: asyncio.Task[None] | None = None
+    # True once the post-mortem for this connection was already logged (a
+    # refusal names its reason), so _drop_control does not say it twice.
+    accounted: bool = False
 
 
 class DeviceLink:
@@ -110,6 +154,7 @@ class DeviceLink:
         wake_queue: BoundedWakeQueue | None = None,
         wake_word_enabled: bool | None = None,
         on_button: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        on_link_lost: Callable[[str], None] | None = None,
     ) -> None:
         self.certs_dir = Path(certs_dir) if certs_dir else None
         self.token = token
@@ -170,6 +215,10 @@ class DeviceLink:
         # because the controller does not implement private-listen sessions.
         self._scoring_evidence = False
         self.on_button = on_button
+        # A sync callback for "the device link just went away". The adapter uses
+        # it to drop its half-sentence buffer: the link has no outbound PCM queue,
+        # so a reconnect must not drain bytes the previous connection never saw.
+        self.on_link_lost = on_link_lost
 
         self.stats = LinkStats()
         self.info = DeviceInfoReport()
@@ -179,7 +228,14 @@ class DeviceLink:
         self._control: ServerConnection | None = None
         self._data: ServerConnection | None = None
         self._servers: list[Server] = []
-        self._send_lock = asyncio.Lock()
+        # Control and data are independent sockets. Sharing one lock let a
+        # stalled /data write park volume_set/ping/flush, and because the ping
+        # never reached the wire its ping_timeout never started either.
+        self._control_lock = asyncio.Lock()
+        self._data_lock = asyncio.Lock()
+        # Bytes accepted into send_pcm but not yet written to /data. Guarded by
+        # the single event loop (no await between read and update).
+        self._inflight_bytes = 0
         self._ping_task: asyncio.Task[None] | None = None
         self._ping_seq = 0
         self._pong_waiters: dict[int, float] = {}
@@ -193,6 +249,9 @@ class DeviceLink:
         self._device_log: deque[str] = deque(maxlen=200)
         self._closing = False
         self.bound_ports: dict[str, int] = {}
+        # Per-connection bookkeeping (byte counters + the ping task it owns),
+        # keyed by id(conn) and dropped by that connection's own handler.
+        self._meters: dict[int, _ConnMeter] = {}
 
     # ------------------------------------------------------------- lifecycle
     async def start(self) -> None:
@@ -232,7 +291,12 @@ class DeviceLink:
             self._ping_task = None
         for conn in (self._control, self._data):
             if conn is not None:
-                await _quiet_close(conn)
+                # A device that just lost power never answers a close frame, and
+                # websockets would wait its 10 s close timeout on each socket.
+                try:
+                    await asyncio.wait_for(_quiet_close(conn), CLOSE_TIMEOUT_S)
+                except TimeoutError:
+                    self._abandon(conn, 1000, "stop")
         self._control = None
         self._data = None
         for server in self._servers:
@@ -240,9 +304,213 @@ class DeviceLink:
         for server in self._servers:
             await server.wait_closed()
         self._servers.clear()
-        self.connected.clear()
+        # Nothing that belonged to a connection may survive stop(): open() on the
+        # next incarnation must start from a truly empty link.
+        self._clear_link_state()
+        self._meters.clear()
         # close() must stop future events too: the queue is drained by rui.
         self.wakes.clear()
+        # Buffered playback belongs to the previous connection even when the
+        # adapter is the one closing; reset it so open() starts clean.
+        self._notify_link_lost("link stopped")
+
+    def _clear_link_state(self) -> None:
+        """Forget every piece of state that belonged to a connection.
+
+        Config and targets (volume cap/level, ``oww_*``, aec, token, features)
+        are ours and survive: the device re-registers from scratch and must not
+        inherit a slot, a gate, a waiter or a counter from its last incarnation.
+        """
+        self._control = None
+        self._data = None
+        self.connected.clear()
+        self._inflight_bytes = 0
+        self._pong_waiters.clear()
+        self._pong_events.clear()
+        self._listen_state = ""
+        self._scoring_evidence = False
+        self._reported_level = None
+        # No probe loop may outlive the plane it probed (unless it is the caller,
+        # e.g. a ping that lost its own socket).
+        task = self._ping_task
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        self._ping_task = None
+        # Fresh locks: a sender parked on the old socket owns the old object, and
+        # waiting behind it is exactly what kept a reconnect from being acked.
+        # Sends re-check the slot identity under the lock, so a stale sender can
+        # never write into the connection that replaced it.
+        self._control_lock = asyncio.Lock()
+        self._data_lock = asyncio.Lock()
+
+    def _meter(self, conn: ServerConnection, direction: str) -> _ConnMeter:
+        meter = _ConnMeter(direction=direction, peer=str(conn.remote_address))
+        self._meters[id(conn)] = meter
+        return meter
+
+    def _abandon(self, conn: ServerConnection, code: int, reason: str) -> None:
+        """Drop a socket without waiting for its close handshake.
+
+        ``conn.close()`` waits for the peer's close frame (10 s by default) and a
+        peer that just lost power never answers it. Callers here are holding a
+        link slot, so they must not await a dead socket.
+        """
+        transport = getattr(conn, "transport", None)
+        if transport is not None:
+            try:
+                transport.abort()
+                return
+            except Exception:  # noqa: BLE001 - abort is best-effort
+                log.debug("dot2 link: transport.abort failed", exc_info=True)
+        asyncio.create_task(_quiet_close(conn, code, reason))
+
+    async def _refuse(self, conn: ServerConnection, code: int, reason: str) -> None:
+        """Tell a live-but-wrong peer why, without hanging on its close echo."""
+        try:
+            await asyncio.wait_for(_quiet_close(conn, code, reason), CLOSE_TIMEOUT_S)
+        except TimeoutError:
+            self._abandon(conn, code, reason)
+
+    def _force_clean_cycle(self, reason: str) -> None:
+        """Give up on a device that never registered.
+
+        Only runs while no control plane owns the link, so it can never touch a
+        live registration: any /data socket is an orphan from the same failed
+        attempt (or from before a power cut) and is dropped so the device dials
+        both planes itself instead of writing into a slot it cannot use.
+        """
+        if self._closing or self._control is not None:
+            return
+        orphan = self._data
+        self._clear_link_state()
+        if orphan is not None:
+            self._abandon(orphan, 1011, reason)
+            log.info("dot2 link: dropped the orphaned data plane: %s", reason)
+        self._notify_link_lost(reason)
+
+    def _adopt_control(self, conn: ServerConnection) -> None:
+        """Make ``conn`` the one control plane and retire the previous one.
+
+        A device that reconnects before the bridge notices its old socket died
+        leaves two live control planes. Keeping the old one open leaves its
+        handler in a read loop that would later clean up state now belonging to
+        the new registration, so it is retired here - synchronously, because a
+        dead peer's close handshake is what we cannot wait for.
+        """
+        previous = self._control
+        if previous is not None and previous is not conn:
+            old = self._meters.get(id(previous))
+            old_task = old.ping_task if old is not None else None
+            if old_task is not None:
+                old_task.cancel()
+                if old is not None:
+                    old.ping_task = None
+                if self._ping_task is old_task:
+                    self._ping_task = None
+            self._abandon(previous, 1011, "superseded by a new register")
+            log.info("dot2 link: retired the superseded control plane (%s)", self.device_id)
+        self._control = conn
+        # A reconnect can land on a device whose config changed under us: the
+        # listen state, the proof that it can score and the last volume it
+        # reported all belong to the connection that is being replaced.
+        self._listen_state = ""
+        self._scoring_evidence = False
+        self._reported_level = None
+        # Pongs for pings the old socket never answered must not be counted as
+        # this connection's.
+        self._pong_waiters.clear()
+        self._pong_events.clear()
+
+    def _adopt_data(self, conn: ServerConnection) -> None:
+        """Make ``conn`` the data plane, retiring a superseded one first."""
+        previous = self._data
+        if previous is not None and previous is not conn:
+            self._abandon(previous, 1011, "superseded by a new data plane")
+            log.info("dot2 link: retired the superseded data plane (%s)", self.device_id)
+        self._data = conn
+        self._inflight_bytes = 0
+
+    def _teardown_control(self, reason: str) -> None:
+        """Take the whole link down: no slot, no gate, no orphan /data.
+
+        ``_clear_link_state`` first, so any sender that was parked on the old
+        socket sees a slot that no longer matches it and writes nothing.
+        """
+        orphan = self._data
+        self._clear_link_state()
+        if orphan is not None and not self._closing:
+            # Without /control nothing can be ordered on the device (flush,
+            # barrier, volume) and the next register must land on sockets the
+            # device dialled itself: a half-open /data is exactly the stale slot
+            # that a bridge restart used to clear.
+            self._abandon(orphan, 1011, reason)
+        if not self._closing:
+            self._notify_link_lost(reason)
+
+    def _lose_control(self, conn: ServerConnection, reason: str) -> None:
+        """Drop a control plane whose frames no longer reach the device."""
+        if conn is not self._control:
+            return
+        meter = self._meters.get(id(conn))
+        if meter is not None:
+            # The close line below says everything the handler's would.
+            meter.accounted = True
+            task = meter.ping_task
+            # ...and a probe loop with no plane to probe stops now, not on its
+            # next tick (unless this call is the loop itself).
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+                if self._ping_task is task:
+                    self._ping_task = None
+        log.warning("dot2 link: %s (%s) dir=control; dropping the link", reason, self.device_id)
+        self._abandon(conn, 1011, reason)
+        self._teardown_control(reason)
+
+    def _drop_control(
+        self,
+        conn: ServerConnection,
+        meter: _ConnMeter,
+        closed: BaseException | None,
+    ) -> None:
+        """Clean up after one control connection, whoever owns the slot now."""
+        self._meters.pop(id(conn), None)
+        code = _close_code(closed, conn)
+        task = meter.ping_task
+        if task is not None:
+            # Only this connection's own probe loop: cancelling whatever is in
+            # ``self._ping_task`` killed the live registration's liveness.
+            task.cancel()
+            if self._ping_task is task:
+                self._ping_task = None
+        if self._control is not conn:
+            if not meter.accounted:
+                log.info(
+                    "dot2 link: late control close (%s) code=%s dir=%s rx=%dB tx=%dB",
+                    self.device_id,
+                    code,
+                    meter.direction,
+                    meter.rx_bytes,
+                    meter.tx_bytes,
+                )
+            return
+        log_line = "dot2 link: control closed (%s) code=%s dir=%s rx=%dB tx=%dB"
+        args = (self.device_id, code, meter.direction, meter.rx_bytes, meter.tx_bytes)
+        if self._closing or code in {"1000", "1001"}:
+            # Our own shutdown, or a device that said goodbye on purpose: not a
+            # fault, so it must not read as one in the log.
+            log.info(log_line, *args)
+        else:
+            log.warning(log_line, *args)
+        self._teardown_control("control plane closed")
+
+    def _notify_link_lost(self, reason: str) -> None:
+        callback = self.on_link_lost
+        if callback is None:
+            return
+        try:
+            callback(reason)
+        except Exception:  # noqa: BLE001 - a handler bug must not kill the link
+            log.exception("dot2 link: on_link_lost handler failed (%s)", reason)
 
     async def wait_connected(self, timeout: float | None = None) -> bool:
         try:
@@ -277,7 +545,9 @@ class DeviceLink:
     async def _handle(self, conn: ServerConnection) -> None:
         path = conn.request.path.split("?", 1)[0]
         if not self._authorized(conn):
-            log.warning("dot2 link: refused %s from %s (token mismatch)", path, conn.remote_address)
+            log.warning(
+                "dot2 link: refused %s from %s: reason=token mismatch", path, conn.remote_address
+            )
             await _send_json(conn, {"type": "refused"})
             await _quiet_close(conn, 1008, "token")
             return
@@ -291,20 +561,88 @@ class DeviceLink:
 
     # --------------------------------------------------------------- control
     async def _serve_control(self, conn: ServerConnection) -> None:
+        """Run one /control connection: register, then read until it dies.
+
+        Both phases live inside one try/finally so there is no window - a close
+        during the ack, the config push or ``mic_start`` included - in which a
+        slot, a gate or a ping task can outlive its socket.
+        """
+        meter = self._meter(conn, "control")
+        closed: BaseException | None = None
+        try:
+            if not await self._register_control(conn, meter):
+                return
+            async for raw in conn:
+                meter.rx_bytes += len(raw)
+                await self._on_control_message(raw)
+        except ConnectionClosed as exc:
+            closed = exc
+        except Exception:  # noqa: BLE001 - a handler bug must not leak the slot
+            log.exception("dot2 link: control handler failed (%s)", self.device_id)
+        finally:
+            self._drop_control(conn, meter, closed)
+
+    async def _register_control(self, conn: ServerConnection, meter: _ConnMeter) -> bool:
+        """Read the first frame and adopt ``conn`` as the control plane.
+
+        Every failure logs *why*: a silent 10 s close is what made the
+        2026-10-28 loop look like a firmware fault while a bridge restart (fresh
+        state) recovered in 3 s.
+        """
+        peer = meter.peer
         try:
             raw = await asyncio.wait_for(conn.recv(), timeout=HANDSHAKE_TIMEOUT_S)
-        except (TimeoutError, ConnectionClosed):
-            await _quiet_close(conn)
-            return
+        except TimeoutError:
+            log.warning(
+                "dot2 link: /control handshake timed out after %.1f s: register did not "
+                "arrive (peer=%s rx=%dB); dropping the link so the device can dial again",
+                HANDSHAKE_TIMEOUT_S,
+                peer,
+                meter.rx_bytes,
+            )
+            self._force_clean_cycle("register did not arrive")
+            self._abandon(conn, 1011, "register did not arrive")
+            meter.accounted = True
+            return False
+        except ConnectionClosed as exc:
+            log.info(
+                "dot2 link: /control closed before register (peer=%s code=%s rx=%dB)",
+                peer,
+                _close_code(exc, conn),
+                meter.rx_bytes,
+            )
+            self._force_clean_cycle("control closed before register")
+            meter.accounted = True
+            return False
+        meter.rx_bytes += len(raw)
         try:
-            message = json.loads(raw if isinstance(raw, str) else raw.decode())
-        except (ValueError, UnicodeDecodeError):
-            await _quiet_close(conn, 1002, "bad register")
-            return
-        if message.get("type") != "register":
-            log.warning("dot2 link: first message was %r, expected register", message.get("type"))
-            await _quiet_close(conn, 1002, "expected register")
-            return
+            # errors="replace": a malformed frame reads as "not register" instead
+            # of raising out of a handler that has not claimed the slot yet.
+            text = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+            message = json.loads(text)
+        except ValueError:
+            log.warning(
+                "dot2 link: register rejected: reason=first frame is not JSON (peer=%s rx=%dB)",
+                peer,
+                meter.rx_bytes,
+            )
+            self._force_clean_cycle("bad register")
+            await self._refuse(conn, 1002, "bad register")
+            meter.accounted = True
+            return False
+        if not isinstance(message, dict) or message.get("type") != "register":
+            kind = message.get("type") if isinstance(message, dict) else type(message).__name__
+            log.warning(
+                "dot2 link: register rejected: reason=first message was %r, expected register "
+                "(peer=%s rx=%dB)",
+                kind,
+                peer,
+                meter.rx_bytes,
+            )
+            self._force_clean_cycle("expected register")
+            await self._refuse(conn, 1002, "expected register")
+            meter.accounted = True
+            return False
 
         self.info = DeviceInfoReport(
             device_id=str(message.get("device_id") or ""),
@@ -315,12 +653,8 @@ class DeviceLink:
             raw=message,
         )
         self.device_id = self.device_id or self.info.device_id
-        self._control = conn
+        self._adopt_control(conn)
         self.stats.control_connects += 1
-        # A reconnect can land on a device whose config changed under us: the
-        # listen state and the proof that it can score belong to that connection.
-        self._listen_state = ""
-        self._scoring_evidence = False
 
         await self._send_control(
             {
@@ -372,20 +706,11 @@ class DeviceLink:
             )
         await self._send_control({"type": "mic_start", "lock_mic": False})
 
-        self._ping_task = asyncio.create_task(self._ping_loop(), name="dot2-ping")
-        try:
-            async for raw in conn:
-                await self._on_control_message(raw)
-        except ConnectionClosed:
-            pass
-        finally:
-            if self._ping_task is not None:
-                self._ping_task.cancel()
-                self._ping_task = None
-            if self._control is conn:
-                self._control = None
-                self.connected.clear()
-            log.info("dot2 link: control closed (%s)", self.device_id)
+        # Owned by this connection only: see _drop_control, which cancels this
+        # exact task and never whatever a newer registration installed.
+        meter.ping_task = asyncio.create_task(self._ping_loop(conn), name="dot2-ping")
+        self._ping_task = meter.ping_task
+        return True
 
     async def _on_control_message(self, raw: str | bytes) -> None:
         if isinstance(raw, bytes):
@@ -513,15 +838,32 @@ class DeviceLink:
             return False
         return self._listen_state == "local" or self._scoring_evidence
 
-    async def _ping_loop(self) -> None:
+    async def _ping_loop(self, conn: ServerConnection | None = None) -> None:
+        """Probe the device over one specific control connection.
+
+        Bound to ``conn`` on purpose: a superseded connection's loop must stop
+        instead of probing whatever registration came after it, and it must stay
+        identifiable so its own handler cancels only itself.
+        """
+        conn = conn if conn is not None else self._control
+        if conn is None:
+            return
         while True:
             await asyncio.sleep(PING_INTERVAL_S)
+            if self._control is not conn:
+                return
+            now = time.monotonic()
+            # A pong for a connection the device already abandoned never
+            # arrives; forgetting the waiter keeps this dict bounded.
+            for stale_id, sent_at in list(self._pong_waiters.items()):
+                if now - sent_at > PONG_WAITER_TTL_S:
+                    self._pong_waiters.pop(stale_id, None)
             self._ping_seq += 1
             ping_id = self._ping_seq
             self._pong_waiters[ping_id] = time.monotonic()
             try:
                 await self._send_control({"type": "ping", "id": ping_id})
-            except ConnectionClosed:
+            except (ConnectionClosed, RuntimeError):
                 return
 
     def _on_pong(self, message: dict[str, Any]) -> None:
@@ -537,13 +879,20 @@ class DeviceLink:
 
     # ------------------------------------------------------------------ data
     async def _serve_data(self, conn: ServerConnection) -> None:
-        self._data = conn
+        meter = self._meter(conn, "data")
+        self._adopt_data(conn)
+        if self._control is not None and not self._closing:
+            # The link is only usable for playback when both halves are here.
+            # A data reconnect restores the gate without waiting for a register.
+            self.connected.set()
         self.stats.data_connects += 1
         log.info("dot2 link: data plane connected (%s)", self.device_id)
+        closed: BaseException | None = None
         try:
             async for raw in conn:
                 if not isinstance(raw, (bytes, bytearray)) or not raw:
                     continue
+                meter.rx_bytes += len(raw)
                 kind = raw[0]
                 payload = bytes(raw[1:])
                 if kind == FRAME_MIC:
@@ -560,12 +909,67 @@ class DeviceLink:
                     log.debug("dot2 link: turn sentinel 0x%02x", kind)
                 else:
                     log.debug("dot2 link: data frame 0x%02x (%d B)", kind, len(payload))
-        except ConnectionClosed:
-            pass
+        except ConnectionClosed as exc:
+            closed = exc
         finally:
-            if self._data is conn:
-                self._data = None
-            log.info("dot2 link: data plane closed (%s)", self.device_id)
+            self._lose_data(
+                conn,
+                "data plane closed",
+                abort=False,
+                quiet=self._closing,
+                meter=meter,
+                closed=closed,
+            )
+
+    def _lose_data(
+        self,
+        conn: ServerConnection,
+        reason: str,
+        *,
+        abort: bool,
+        quiet: bool = False,
+        meter: _ConnMeter | None = None,
+        closed: BaseException | None = None,
+    ) -> None:
+        """Drop ``conn`` as the data plane and let the device dial again.
+
+        ``abort=True`` kills the TCP socket (a graceful close would itself wait
+        on the same full write buffer). The identity check keeps an old socket's
+        late timeout from tearing down a connection the device already replaced.
+        """
+        meter = meter if meter is not None else self._meters.get(id(conn))
+        self._meters.pop(id(conn), None)
+        code = _close_code(closed, conn)
+        rx = meter.rx_bytes if meter is not None else 0
+        tx = meter.tx_bytes if meter is not None else 0
+        if conn is not self._data:
+            log.info(
+                "dot2 link: late data close (%s) code=%s dir=%s rx=%dB tx=%dB",
+                self.device_id,
+                code,
+                meter.direction if meter is not None else "data",
+                rx,
+                tx,
+            )
+            return
+        self._data = None
+        self._inflight_bytes = 0
+        self.connected.clear()
+        # A stalled write is a failure even when the device is still registered
+        # on /control: playback is broken, so the gate must not claim otherwise.
+        (log.info if quiet else log.warning)(
+            "dot2 link: %s (%s) code=%s dir=%s rx=%dB tx=%dB; %s",
+            reason,
+            self.device_id,
+            code,
+            meter.direction if meter is not None else "data",
+            rx,
+            tx,
+            "aborting /data so the device reconnects" if abort else "data plane down",
+        )
+        if abort:
+            self._abandon(conn, 1011, "write stalled")
+        self._notify_link_lost(reason)
 
     def _enqueue_audio(self, payload: bytes) -> None:
         self.stats.mic_frames += 1
@@ -603,25 +1007,95 @@ class DeviceLink:
         if conn is None:
             raise RuntimeError("device control plane is not connected")
         text = json.dumps(message, separators=(",", ":"))
-        async with self._send_lock:
-            await conn.send(text)
+        try:
+            async with asyncio.timeout(CONTROL_WRITE_TIMEOUT_S):
+                async with self._control_lock:
+                    if conn is not self._control:
+                        # The slot moved while this message waited: it belongs to
+                        # a socket the device already replaced.
+                        log.debug(
+                            "dot2 link: dropped %s for a superseded control plane",
+                            message.get("type"),
+                        )
+                        return
+                    await conn.send(text)
+        except TimeoutError:
+            self._lose_control(
+                conn, f"/control write stalled > {CONTROL_WRITE_TIMEOUT_S:.1f} s"
+            )
+            raise RuntimeError("device control plane is blocked") from None
+        meter = self._meters.get(id(conn))
+        if meter is not None:
+            meter.tx_bytes += len(text)
 
-    async def send_pcm(self, pcm: bytes) -> None:
-        """Queue 48 kHz mono PCM as ``0x02`` frames (whole frames only)."""
+    async def _write_data_frame(self, conn: ServerConnection, frame: bytes) -> bool:
+        """Write one /data frame under the data lock with a hard bound.
+
+        Returning False means the frame was not written and the data plane has
+        been dropped; callers must not raise into the audio plane on link loss.
+        """
+        async with self._data_lock:
+            if conn is not self._data:
+                return False
+            try:
+                async with asyncio.timeout(WRITE_TIMEOUT_S):
+                    await conn.send(frame)
+            except TimeoutError:
+                self._lose_data(
+                    conn,
+                    f"/data write stalled > {WRITE_TIMEOUT_S:.2f} s",
+                    abort=True,
+                )
+                return False
+            except ConnectionClosed as exc:
+                self._lose_data(
+                    conn, "data plane closed during write", abort=False, closed=exc
+                )
+                return False
+            meter = self._meters.get(id(conn))
+            if meter is not None:
+                meter.tx_bytes += len(frame)
+            return True
+
+    async def send_pcm(self, pcm: bytes) -> bool:
+        """Queue 48 kHz mono PCM as ``0x02`` frames (whole frames only).
+
+        Returns False when the frame was dropped because the data plane is down
+        or was just aborted. A stalled write aborts /data instead of waiting on
+        a full socket buffer forever; the adapter (the audio plane) sees a bool,
+        never a timeout exception.
+        """
         conn = self._data
         if conn is None:
-            raise RuntimeError("device data plane is not connected")
-        for frame in split_playback(pcm):
-            async with self._send_lock:
-                await conn.send(frame)
-            self.stats.speaker_frames += 1
+            log.debug("dot2 link: dropped %d B of PCM: data plane not connected", len(pcm))
+            return False
+        frames = split_playback(pcm)
+        if not frames:
+            return True
+        total = sum(len(frame) for frame in frames)
+        self._inflight_bytes += total
+        try:
+            if self._inflight_bytes > SEND_WATERMARK_BYTES:
+                self._lose_data(
+                    conn,
+                    f"outbound PCM watermark exceeded "
+                    f"({self._inflight_bytes} B > {SEND_WATERMARK_BYTES} B)",
+                    abort=True,
+                )
+                return False
+            for frame in frames:
+                if not await self._write_data_frame(conn, frame):
+                    return False
+                self.stats.speaker_frames += 1
+            return True
+        finally:
+            self._inflight_bytes = max(0, self._inflight_bytes - total)
 
     async def end_stream(self) -> None:
         conn = self._data
         if conn is None:
             return
-        async with self._send_lock:
-            await conn.send(speaker_eos())
+        await self._write_data_frame(conn, speaker_eos())
 
     async def flush(self) -> None:
         """Discard buffered playback, then wait until the device has seen it.
@@ -634,11 +1108,22 @@ class DeviceLink:
         flush was applied. Keep sending the flush: it also opens the device's
         prime bypass; skipping it makes every reply wait the 1.024 s prime gate.
         """
-        await self._send_control({"type": "speaker_flush"})
+        if self._control is None:
+            # Nothing to flush on a link the device already left; a broken link
+            # must not turn the next reply's stop_playback() into an exception.
+            return
+        try:
+            await self._send_control({"type": "speaker_flush"})
+        except (ConnectionClosed, RuntimeError):
+            return
         await self._barrier()
 
     async def _barrier(self, timeout: float = 0.8) -> bool:
         """Send a ping and wait for its pong: orders /control against later sends."""
+        if self._control is None:
+            # A lost link has no device buffer left to order against; the next
+            # reply must be a no-op, not an exception in rui's audio plane.
+            return False
         self._ping_seq += 1
         ping_id = self._ping_seq
         event = asyncio.Event()
@@ -648,7 +1133,7 @@ class DeviceLink:
             await self._send_control({"type": "ping", "id": ping_id})
             await asyncio.wait_for(event.wait(), timeout)
             return True
-        except (TimeoutError, ConnectionClosed):
+        except (TimeoutError, ConnectionClosed, RuntimeError):
             log.warning("dot2 link: flush barrier timed out")
             return False
         finally:
@@ -672,7 +1157,12 @@ class DeviceLink:
         return self._reported_level
 
     async def set_leds(self, leds: list[dict[str, Any]], listening: bool = False) -> None:
-        await self._send_control({"type": "leds", "leds": leds, "listening": listening})
+        try:
+            await self._send_control({"type": "leds", "leds": leds, "listening": listening})
+        except (ConnectionClosed, RuntimeError):
+            # A repaint is cosmetic; it must never be the thing that raises into
+            # the caller's loop when the device is gone.
+            return
 
 
 async def _send_json(conn: ServerConnection, payload: dict[str, Any]) -> None:
@@ -680,6 +1170,17 @@ async def _send_json(conn: ServerConnection, payload: dict[str, Any]) -> None:
         await conn.send(json.dumps(payload, separators=(",", ":")))
     except ConnectionClosed:
         pass
+
+
+def _close_code(closed: BaseException | None, conn: ServerConnection) -> str:
+    """The wire close code for a close line: received, else sent, else current."""
+    if isinstance(closed, ConnectionClosed):
+        for frame in (getattr(closed, "rcvd", None), getattr(closed, "sent", None)):
+            code = getattr(frame, "code", None)
+            if code is not None:
+                return str(code)
+    code = getattr(conn, "close_code", None)
+    return str(code) if code is not None else "-"
 
 
 async def _quiet_close(conn: ServerConnection, code: int = 1000, reason: str = "") -> None:
