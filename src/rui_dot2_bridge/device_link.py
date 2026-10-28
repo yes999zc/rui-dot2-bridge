@@ -242,6 +242,13 @@ class DeviceLink:
         # because the controller does not implement private-listen sessions.
         self._scoring_evidence = False
         self.on_button = on_button
+        # Device-sovereign mute state (task-18): every button frame carries the
+        # observed state, and a firmware that reports ``mute_state`` separately is
+        # honoured too. It is NOT DOT2_MUTE (a deploy-time volume cap); this is what
+        # the physical key says right now. It survives a reconnect because the device
+        # persists its own mute across boots.
+        self.muted = False
+        self.muted_known = False
         # A sync callback for "the device link just went away". The adapter uses
         # it to drop its half-sentence buffer: the link has no outbound PCM queue,
         # so a reconnect must not drain bytes the previous connection never saw.
@@ -858,13 +865,20 @@ class DeviceLink:
                 # lower the target, only be recorded.
                 log.info("dot2 link: volume %d above ceiling, pulling back to %d", level, self._volume_level)
                 await self.set_volume_level(self._volume_level)
+        elif kind == "mute_state":
+            # Firmware that keeps the mute key device-local still reports the state.
+            # Give the adapter the same handler so a mute/unmute reaches rui even
+            # when no ``button`` frame is sent.
+            reported = message.get("muted")
+            self._set_muted(reported)
+            if isinstance(reported, bool):
+                await self._dispatch_button({"type": "mute_state", "muted": reported})
         elif kind == "button":
+            # The observed state is authoritative for this frame: mute is updated
+            # before the callback so health() never reports the pre-press value.
+            self._set_muted(message.get("muted"))
             log.info("dot2 link: button %s", message)
-            if self.on_button is not None:
-                try:
-                    await self.on_button(message)
-                except Exception:  # noqa: BLE001 - a handler bug must not kill the link
-                    log.exception("dot2 link: on_button handler failed")
+            await self._dispatch_button(message)
         elif kind == "stats":
             log.debug("dot2 link: stats %s", message)
         elif kind == "log":
@@ -880,6 +894,21 @@ class DeviceLink:
             self._on_oww_shadow_cross(message)
         else:
             log.debug("dot2 link: control %s", kind)
+
+    def _set_muted(self, value: object) -> None:
+        """Record a reported mute state; anything non-boolean is ignored, not guessed."""
+        if isinstance(value, bool):
+            self.muted = value
+            self.muted_known = True
+
+    async def _dispatch_button(self, message: dict[str, Any]) -> None:
+        """Hand one button/state frame to the adapter; a handler bug cannot kill the link."""
+        if self.on_button is None:
+            return
+        try:
+            await self.on_button(message)
+        except Exception:  # noqa: BLE001 - a handler bug must not kill the link
+            log.exception("dot2 link: on_button handler failed")
 
     def _on_oww_shadow_cross(self, message: dict[str, Any]) -> None:
         """Record a shadow crossing: proof the device scored, but never a wake.

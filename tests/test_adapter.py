@@ -515,7 +515,7 @@ class WakeContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(Capability.DEVICE_WAKE, info.capabilities)
         self.assertIn(Capability.BARGE_VIA_DEVICE, info.capabilities)
 
-    async def test_drain_signals_stays_empty_and_separate(self) -> None:
+    async def test_drain_signals_does_not_carry_device_wakes(self) -> None:
         adapter = make_adapter()
         adapter.inject_wake()
         self.assertEqual(adapter.drain_signals(), [])

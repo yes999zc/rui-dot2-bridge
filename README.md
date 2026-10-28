@@ -43,6 +43,24 @@ rui 起一个音频平面 → 插件连上设备（wss 控制通道 + 双向音�
 - **EQ 与限幅**：`dsp.py` 按房间响度目标做低切与高频搁架，并保证不削波（目标值可用 `/loudness` 复核）。
 - **可观测**：`plug-test` 跑契约自测；设备状态、重连、丢包都进 rui 的日志与轨迹。
 
+### 物理按键
+
+设备上报的是 evdev 键码（`clickType`），不是键名；静音状态在同一条消息的 `muted`
+字段里。插件把按键映射成 `drain_signals()` 事件交给 rui：
+
+| `clickType` | 物理键 | 事件 `kind` | `text` |
+|---|---|---|---|
+| 113 | 静音 | `mute` / `unmute`（按 `muted`） | `muted` / `unmuted` |
+| 114 | 音量 − | `volume_down` | 观测到的 `muted` |
+| 115 | 音量 + | `volume_up` | 观测到的 `muted` |
+| 138 | 动作键（圆点） | `action` | 观测到的 `muted` |
+
+- 只在按下（`down: true`）时发一条事件，释放不重复触发。
+- 未识别的 `clickType` 每个进程只记一条 `INFO` 日志并忽略，绝不猜成动作键。
+- `muted` 同时写进适配器 `/health` 的 `muted`（每设备），与部署期的 `DOT2_MUTE`
+  无关：后者是音量上限，改它要重启；前者是设备自己的静音键，按下即生效。
+- 音量键只上报（明确带 `muted`），不改配置/不写回设备；写回属于 task-19。
+
 ## 三行启动
 
 ```bash
@@ -164,6 +182,28 @@ Source: [`docs/assets/architecture.mmd`](docs/assets/architecture.mmd); exports 
 - **Playback gate**: `DOT2_PLAYBACK_GATE_MS` sets how long the uplink is muted while playing (`0` = leave it to the device AEC, which enables barge-in together with server-side Chinese KWS).
 - **EQ and limiting**: `dsp.py` applies a low cut and high shelf toward the room's loudness target without clipping (verify with `/loudness`).
 - **Observability**: `plug-test` runs the contract suite; device state, reconnects and drops show up in rui logs and traces.
+
+### Physical buttons
+
+The device reports evdev key codes (`clickType`), not key names; the mute state
+travels in the same frame's `muted` field. The plug maps keys to
+`drain_signals()` events for rui:
+
+| `clickType` | Physical key | Event `kind` | `text` |
+|---|---|---|---|
+| 113 | mute | `mute` / `unmute` (from `muted`) | `muted` / `unmuted` |
+| 114 | volume down | `volume_down` | observed `muted` |
+| 115 | volume up | `volume_up` | observed `muted` |
+| 138 | action (dot) | `action` | observed `muted` |
+
+- One event per press (`down: true`); the release never double-fires.
+- An unknown `clickType` is logged once per process at `INFO` and ignored; it is
+  never guessed into an action.
+- `muted` also appears in the adapter's per-device `/health` as `muted`. This is
+  not `DOT2_MUTE` (a deploy-time volume ceiling that needs a restart): the key is
+  device-sovereign and takes effect immediately.
+- Volume keys are reported only (with the observed `muted`); config/device
+  writeback is task-19.
 
 ## Three-line quickstart
 

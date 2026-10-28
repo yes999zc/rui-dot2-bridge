@@ -19,6 +19,7 @@ import logging
 import os
 import time
 import wave
+from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
 from datetime import datetime
@@ -39,6 +40,13 @@ from rui.device.contract import (
 )
 
 from . import plug as plug_manifest
+from .buttons import (
+    CLICK_TYPE_NAMES,
+    ButtonSignal,
+    click_type,
+    kind_for,
+    mute_text,
+)
 from .control import start_control_server
 from .device_link import DeviceLink
 from .dsp import LoudnessConfig, LoudnessProcessor, fade_out_pcm
@@ -272,6 +280,15 @@ class Dot2Adapter(DeviceAdapter):
         # Bounded, thread-safe queue for device wakes (v1 section 4.2). The
         # control socket produces; rui's audio plane drains via drain_wakes().
         self._wakes = BoundedWakeQueue(MAX_PENDING_WAKES)
+        # Physical keys (task-18): the link calls _on_button, which maps clickType to
+        # a small signal and queues it for rui's drain_signals(). Bounded because a
+        # stuck/held key must not grow memory; the freshest events are what matter.
+        self._button_signals: deque[ButtonSignal] = deque(maxlen=64)
+        self._unknown_click_types: set[int] = set()
+        # Last observed device mute state. DeviceLink owns the live value; this is
+        # the adapter's copy for health() and for a mute toggle that omits `muted`.
+        self._muted: bool | None = None
+        self._last_mute_signal: bool | None = None
         self._closed = False
         self._link: DeviceLink | None = None
         self._link_kwargs = {
@@ -300,6 +317,9 @@ class Dot2Adapter(DeviceAdapter):
             "playing": lambda: self._playing,
             "wake_queue": self._wakes,
             "wake_word_enabled": self.oww_on_device == "on",
+            # Physical buttons (task-18): without this injection every button frame
+            # was logged and dropped (device_link had the callback but nobody set it).
+            "on_button": self._on_button,
             # The link owns no outbound PCM queue: the half-sentence lives in
             # `_frame_buffer` here. When the socket dies (write timeout, device
             # close, controller stop) the link tells us so the tail cannot be
@@ -501,6 +521,11 @@ class Dot2Adapter(DeviceAdapter):
         )
         return {
             "connected": connected,
+            # task-18: the physical mute key's observed state, per device. This is
+            # NOT DOT2_MUTE (a deploy-time volume cap): the key works without a
+            # restart, and this field is how rui's /health sees it.
+            "muted": bool(self._link_muted(link)),
+            "muted_known": self._muted_known(link),
             # Diagnostics for the console/log: why the flag above is what it is.
             "data_plane": data_plane,
             "speaker_fresh": fresh,
@@ -545,6 +570,17 @@ class Dot2Adapter(DeviceAdapter):
             },
         }
 
+    def _link_muted(self, link: object) -> bool:
+        """The live link's mute state, falling back to the adapter's last frame."""
+        value = getattr(link, "muted", None)
+        if isinstance(value, bool):
+            return value
+        return bool(self._muted)
+
+    def _muted_known(self, link: object) -> bool:
+        """Whether a button/mute_state frame has ever reported a state."""
+        return bool(getattr(link, "muted_known", False)) or self._muted is not None
+
     def volume_cap(self) -> float:
         return self.volume_cap_percent
 
@@ -579,21 +615,81 @@ class Dot2Adapter(DeviceAdapter):
         """Return every pending device wake once; synchronous and non-blocking.
 
         RUI validates score/threshold/staleness itself and owns the turn/barge
-        decision. Vendor assistant wakes stay on drain_signals(); the two
-        channels are never merged (v1 section 4.3).
+        decision. Physical keys stay on drain_signals(); the two channels are
+        never merged (v1 section 4.3).
         """
         if self._closed:
             return []
         return self._wakes.drain()
 
-    def drain_signals(self) -> list:
-        """Vendor assistant channel: EchoMuse vendor wakes are not our wake.
+    async def _on_button(self, message: Mapping[str, Any]) -> None:
+        """Map one physical-key frame to a drained signal.
 
-        Deliberately empty. oww_wake is the device detecting OUR wake word and
-        goes through drain_wakes(); the vendor's own assistant (wake/dialog_end/
-        playing) would use this method, and this plug never pretends to have one.
+        ``clickType`` is the identity (113 mute, 114 volume-down, 115 volume-up,
+        138 action). Only the press is an event; releases are ignored. The mute key
+        is stateful: its kind is ``mute``/``unmute`` from the observed ``muted``
+        field, and a repeated state (button + separate ``mute_state``) is emitted
+        once. Unknown codes are logged once per boot and otherwise inert.
         """
-        return []
+        if not isinstance(message, Mapping):
+            return
+        muted = message.get("muted")
+        if isinstance(muted, bool):
+            self._muted = muted
+        if message.get("type") == "mute_state":
+            if isinstance(muted, bool):
+                self._emit_mute(muted)
+            return
+        code = click_type(message.get("clickType"))
+        mapped = kind_for(code)
+        if mapped is None:
+            if code is not None and code not in self._unknown_click_types:
+                self._unknown_click_types.add(code)
+                log.info(
+                    "dot2 adapter: ignoring unknown button clickType %s (button=%s); "
+                    "see buttons.CLICK_TYPE_KINDS",
+                    code,
+                    message.get("button"),
+                )
+            return
+        if not bool(message.get("down")):
+            return
+        if mapped == "mute":
+            # A frame without `muted` is a legacy toggle: flip the last known state.
+            self._emit_mute(bool(muted) if isinstance(muted, bool) else not bool(self._muted))
+            return
+        self._button_signals.append(
+            ButtonSignal(kind=mapped, text=mute_text(muted))
+        )
+        log.debug(
+            "dot2 adapter: button %s -> %s (muted=%s)",
+            CLICK_TYPE_NAMES.get(code, code),
+            mapped,
+            mute_text(muted),
+        )
+
+    def _emit_mute(self, muted: bool) -> None:
+        """Queue one mute state change, at most once per state transition."""
+        self._muted = muted
+        if self._last_mute_signal is muted:
+            return
+        self._last_mute_signal = muted
+        self._button_signals.append(
+            ButtonSignal(kind="mute" if muted else "unmute", text=mute_text(muted))
+        )
+
+    def drain_signals(self) -> list[ButtonSignal]:
+        """Physical-key events since the last call (task-18), never doubled.
+
+        These are buttons, not a vendor assistant: oww_wake stays on drain_wakes(),
+        and the two channels are never merged. Synchronous and bounded like the
+        contract requires; unknown keys never enter the queue.
+        """
+        if self._closed:
+            return []
+        out = list(self._button_signals)
+        self._button_signals.clear()
+        return out
 
     def inject_wake(
         self,
