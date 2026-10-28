@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `scripts/onboard_device.py` + `docs/onboard-device.md`：新设备一条命令接入。重写设备
+  `/data/local/etc/echomuse/{controller.json,ca.pem,token}`（备份 → 写入 → 逐字节读回校验 → 重启设备
+  server → 轮询 rui API 直到 `connected`），支持 `--dry-run`（只打计划）、`--fallback`（兜底 endpoint，
+  可重复）、`--mdns`、只重指向（不给 `--secrets-dir` 时只改 `controller.json`）。
+  全部参数化，**仓库内不含任何真实地址/令牌/序列号**。
+
+### Notes
+
+- 只增工具与文档，**adapter 代码零改动**，不影响 1.3.2 的运行行为；`v1.3.2` 的 tag 口径见该版本的 Notes。
+
 ## [1.3.2] - 2026-10-28
 
 ### Changed

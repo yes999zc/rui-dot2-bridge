@@ -74,6 +74,19 @@ docker run --rm -v /vol1/rui/plugins:/opt/rui-plugins:ro -e PYTHONPATH=/opt/rui-
 
 生产用 Compose：核心镜像 + `-v ./plugins:/opt/rui-plugins:ro` + `PYTHONPATH=/opt/rui-plugins` + `RUI_ADAPTER_PLUGINS=dot2=rui_dot2_bridge.adapter:build`，再按设备设 `DOT2_HOST` / `DOT2_LISTEN_PORT` / `DOT2_EM_TOKEN`（模板见 `deploy/`）。**不需要造下游镜像**。
 
+## 新设备接入（一条命令）
+
+已解锁 + 已刷 EchoMuse 的 Dot 2，一条命令指到本部署：改的是设备 `/data/local/etc/echomuse/` 下的
+`controller.json` / `ca.pem` / `token`（备份 → 写入 → 逐字节读回校验 → 重启设备 server → 等 rui 报 connected）。
+主机、端口、令牌、序列号全是参数，**仓库里没有任何真实部署信息**。
+
+```bash
+python scripts/onboard_device.py --device-id dot2-b --rui http://<your-rui>:8080 \
+  --rui-token-file ~/.rui/console-token.txt --secrets-dir ~/rui/dot2-secrets   # 先加 --dry-run 看计划
+```
+
+要填哪些参数、两种模式（只改地址 / 换部署）、回滚与常见错误见 [docs/onboard-device.md](docs/onboard-device.md)。
+
 ## 让 AI 帮你装
 
 把下面这段贴给任意 AI 助手：
@@ -217,6 +230,21 @@ docker run --rm -v /vol1/rui/plugins:/opt/rui-plugins:ro -e PYTHONPATH=/opt/rui-
 ```
 
 In production use Compose: core image + `-v ./plugins:/opt/rui-plugins:ro` + `PYTHONPATH=/opt/rui-plugins` + `RUI_ADAPTER_PLUGINS=dot2=rui_dot2_bridge.adapter:build`, then set `DOT2_HOST` / `DOT2_LISTEN_PORT` / `DOT2_EM_TOKEN` per device (templates under `deploy/`). **No downstream image is needed**.
+
+## Onboard a new device (one command)
+
+For an unlocked, EchoMuse-flashed Dot 2, one command rewrites the device's
+`/data/local/etc/echomuse/{controller.json,ca.pem,token}` (backup → write → byte-for-byte
+read-back → restart the device server → wait until rui reports it connected).
+Every host, port, token and serial is a flag; no real deployment details live in this repo.
+
+```bash
+python scripts/onboard_device.py --device-id dot2-b --rui http://<your-rui>:8080 \
+  --rui-token-file ~/.rui/console-token.txt --secrets-dir ~/rui/dot2-secrets   # add --dry-run to preview
+```
+
+See [docs/onboard-device.md](docs/onboard-device.md) for the parameter list, the two modes
+(repoint only vs. re-provision), rollback and troubleshooting.
 
 ## Let an AI install it
 
