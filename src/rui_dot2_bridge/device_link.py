@@ -118,6 +118,14 @@ class LinkStats:
     wake_events: int = 0
     invalid_wakes: int = 0
     shadow_crossings: int = 0
+    # Data-plane close accounting (diagnostics for the dot2 1011 investigation;
+    # no abort, discard or reconnect decision reads these). Only a close that
+    # still owned the /data slot counts: a late close of a superseded socket
+    # never was the live plane.
+    data_plane_closes: int = 0
+    last_data_close_at: float = 0.0  # time.monotonic() of the previous counted close
+    data_close_rx_total: int = 0
+    data_close_dropped_total: int = 0  # PCM frames dropped during the counted planes
 
 
 @dataclass
@@ -1118,16 +1126,32 @@ class DeviceLink:
         self._data = None
         self._inflight_bytes = 0
         self.connected.clear()
+        # Diagnostics only: count the close, measure the gap since the previous
+        # one and carry rx/drop accounting onto the existing line. The field
+        # evidence had a rhythm (closes every ~20 s) that a lone per-socket line
+        # could not show, so close#N/interval make it readable from the log.
+        now = time.monotonic()
+        previous_close_at = self.stats.last_data_close_at
+        interval = f"{now - previous_close_at:.1f}s" if previous_close_at else "n/a"
+        dropped = self.stats.dropped_audio - self.stats.data_close_dropped_total
+        self.stats.data_plane_closes += 1
+        self.stats.last_data_close_at = now
+        self.stats.data_close_rx_total += rx
+        self.stats.data_close_dropped_total += dropped
         # A stalled write is a failure even when the device is still registered
         # on /control: playback is broken, so the gate must not claim otherwise.
         (log.info if quiet else log.warning)(
-            "dot2 link: %s (%s) code=%s dir=%s rx=%dB tx=%dB; %s",
+            "dot2 link: %s (%s) code=%s dir=%s rx=%dB tx=%dB "
+            "close#%d interval=%s dropped=%d; %s",
             reason,
             self.device_id,
             code,
             meter.direction if meter is not None else "data",
             rx,
             tx,
+            self.stats.data_plane_closes,
+            interval,
+            dropped,
             "aborting /data so the device reconnects" if abort else "data plane down",
         )
         if abort:

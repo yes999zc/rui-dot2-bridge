@@ -969,6 +969,45 @@ class AbnormalCloseResetTest(unittest.IsolatedAsyncioTestCase):
         await control.close()
         await data2.close()
 
+    async def test_data_plane_close_counters_are_logged(self) -> None:
+        """D4: the close line must say which close it is, when and how much.
+
+        Field evidence was a rhythm (36 closes, each uptime a multiple of 20 s)
+        but the bridge logged a lone line per socket with no notion of "how many
+        so far" or "how long since the previous one". These counters are
+        reporting-only: abort, discard and reconnect decisions never read them.
+        """
+        control = await self._register_control()
+        payload = bytes(320)
+        with self.assertLogs("rui_dot2_bridge.device_link", level="INFO") as captured:
+            for close_number in (1, 2):
+                data = await self._open_data()
+                await self._wait_until(lambda: self.link.connected.is_set())
+                # One mic block: 1 kind byte + 2 seq bytes + PCM is the rx count
+                # the close line reports for this incarnation.
+                await data.send(bytes([FRAME_MIC]) + b"\x00\x01" + payload)
+                await self._wait_until(
+                    lambda n=close_number: self.link.stats.mic_frames == n
+                )
+                data.transport.abort()
+                await self._wait_until(
+                    lambda n=close_number: self.link.stats.data_plane_closes == n
+                )
+        close_log = "\n".join(captured.output)
+
+        self.assertEqual(self.link.stats.data_plane_closes, 2)
+        self.assertEqual(self.link.stats.data_close_rx_total, 2 * (3 + len(payload)))
+        self.assertGreater(self.link.stats.last_data_close_at, 0.0)
+        self.assertEqual(self.link.stats.data_close_dropped_total, 0)
+        # The first close has no predecessor to measure against; the second does.
+        self.assertIn("close#1 interval=n/a", close_log)
+        self.assertRegex(close_log, r"close#2 interval=\d+\.\d+s")
+        self.assertIn("dropped=0", close_log)
+        # The pre-D4 fields stay on the same line.
+        self.assertIn("code=", close_log)
+        self.assertIn("dir=data", close_log)
+        await control.close()
+
 
 class HalfOpenWatchdogTest(unittest.IsolatedAsyncioTestCase):
     """P0b-C1: a peer that stops reading/replying must not stay connected for 887 s.
