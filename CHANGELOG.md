@@ -1,10 +1,42 @@
 # Changelog
 
-## [Unreleased]
+## [1.3.5] - 2026-10-29
+
+### Added
+
+- **dot2 `/data` 关闭计数日志**：`_lose_data()` 的既有 INFO/WARNING 关闭行尾追加
+  `close#N interval=…s dropped=N`，`LinkStats` 新增只读计数
+  （`data_plane_closes` / `last_data_close_at` / `data_close_rx_total` /
+  `data_close_dropped_total`）。`interval` 由 `time.monotonic()` 计算距上一次关闭的间隔
+  （首条为 `n/a`），供线上直接判读 1011 的关闭节律；**只读计数，不改 keepalive、abort、
+  丢弃、重连与关闭码**。新增单测
+  `tests/test_link.py::AbnormalCloseResetTest::test_data_plane_close_counters_are_logged`。
 
 ### Fixed
 
-- **1.3.4**：`/data` 单帧写超时 0.75 s → **1.0 s**（真机依据：2026-10-28 19:20:38 dot2-b 在 2.4G 重传期出现一次 0.75 s 停顿即被判定为死连接，abort 后需 50.6 s 才恢复；1.0 s 容忍单次重传抖动，仍保留硬上界；`CONTROL_WRITE_TIMEOUT_S`(3 s)、出站水位、ping、flush 屏障、帧长均未改动），`plugin.yaml`/`pyproject.toml` 版本 1.3.3 → 1.3.4，`rui_compat` 维持 `">=0.8.1 <0.9.0"`。
+- `scripts/check.sh` 的 config probe 仍 `from house_ear.config import load_config`，
+  但 rui 仓 0.2.0 已把包改名为 `rui`，该步骤必然失败；改为 `from rui.config`。
+  只修脚本自身，不涉及 adapter 行为。
+
+### Docs
+
+- README（中英）通用化：不再写死当前版本与兼容矩阵，版本只通过页首的
+  "Latest release" 指向 GitHub release；保留「新设备接入：一条命令」
+  （`scripts/onboard_device.py` + `docs/onboard-device.md`）。
+
+### Notes
+
+- **行为零改动**：1.3.5 只多计数日志 + 修一条测试脚本 import + 文档；
+  连接/重连/丢弃/keepalive/写超时阈值全部不变。
+- **`rui_compat` 不变**：仍 `">=0.8.1 <0.9.0"`（与 1.3.3/1.3.4 一致）。
+- `plugin.yaml` / `pyproject.toml` 版本 1.3.4 → **1.3.5**。
+- **不发 tag、不做 release**：等维护者 review 后执行。
+
+## [1.3.4] - 2026-10-28
+
+### Fixed
+
+- `/data` 单帧写超时 0.75 s → **1.0 s**（真机依据：2026-10-28 19:20:38 dot2-b 在 2.4G 重传期出现一次 0.75 s 停顿即被判定为死连接，abort 后需 50.6 s 才恢复；1.0 s 容忍单次重传抖动，仍保留硬上界；`CONTROL_WRITE_TIMEOUT_S`(3 s)、出站水位、ping、flush 屏障、帧长均未改动），`plugin.yaml`/`pyproject.toml` 版本 1.3.3 → 1.3.4，`rui_compat` 维持 `">=0.8.1 <0.9.0"`。
 
 ### Added
 
@@ -16,7 +48,7 @@
 
 ### Notes
 
-- 只增工具与文档，**adapter 代码零改动**，不影响 1.3.2 的运行行为；`v1.3.2` 的 tag 口径见该版本的 Notes。
+- onboard 工具只增脚本与文档，不引入新依赖；`v1.3.2` 的 tag 口径见该版本的 Notes。
 
 ## [1.3.3] - 2026-10-28
 
