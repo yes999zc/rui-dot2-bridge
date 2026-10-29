@@ -30,7 +30,7 @@
   连接/重连/丢弃/keepalive/写超时阈值全部不变。
 - **`rui_compat` 不变**：仍 `">=0.8.1 <0.9.0"`（与 1.3.3/1.3.4 一致）。
 - `plugin.yaml` / `pyproject.toml` 版本 1.3.4 → **1.3.5**。
-- **不发 tag、不做 release**：等维护者 review 后执行。
+- **tag `v1.3.5` 随本版本发布**；release 正文见 GitHub releases。生产使用方式仍是「插件目录替换 + 重启 rui」，见 HANDOFF。
 
 ## [1.3.4] - 2026-10-28
 
