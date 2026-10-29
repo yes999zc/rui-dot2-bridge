@@ -118,6 +118,7 @@ python scripts/onboard_device.py --device-id dot2-b --rui http://<your-rui>:8080
   - 本项目只提供软件侧的桥接层；设备固件、网络与令牌的准备由你按厂商与设备的既有能力完成。
 - 中文唤醒词：走 rui 服务端 KWS（中文）；设备端 OWW 目前只用于英文模型，`DOT2_OWW_ON_DEVICE=off` 时完全关闭。
 - 播放音乐需要 rui 侧配置音乐源（如 Navidrome）。
+- 第三方设备桥请见 [rui-plugin-template](https://github.com/yes999zc/rui-plugin-template) 与 [docs/bridge-developer](https://github.com/yes999zc/rui/tree/main/docs/bridge-developer/)。
 
 ## 故障排查
 
@@ -254,6 +255,7 @@ No ffmpeg build needed (the image ships it)
   - this project only provides the software bridge; preparing the device firmware, network and token is up to you, using the device's existing capabilities.
 - Chinese wake words come from rui's server-side KWS; the on-device OWW path only ships an English model and is off by default (`DOT2_OWW_ON_DEVICE=off`).
 - Music needs a source configured on the rui side (e.g. Navidrome).
+- Writing a third-party device bridge? See [rui-plugin-template](https://github.com/yes999zc/rui-plugin-template) and [docs/bridge-developer](https://github.com/yes999zc/rui/tree/main/docs/bridge-developer/).
 
 ## Troubleshooting
 
