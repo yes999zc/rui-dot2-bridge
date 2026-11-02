@@ -532,6 +532,15 @@ class Dot2Adapter(DeviceAdapter):
             "data_idle_ms": None if idle_s is None else round(idle_s * 1000.0, 1),
             "speaker_stale_s": SPEAKER_STALE_S,
             "half_open_drops": int(getattr(stats, "half_open_drops", 0)),
+            # Data-plane-only watchdog (plug 1.3.6): how many times the link was
+            # dropped because /data went deaf while /control still answered. The
+            # threshold is the one this link instance actually enforces (env
+            # DOT2_DATA_SILENCE_S included), so the console can be read next to
+            # `data_idle_ms` without guessing which window was configured.
+            "data_silence_trips": int(getattr(stats, "data_silence_trips", 0)),
+            "data_silence_timeout_s": round(
+                float(getattr(link, "data_silence_timeout_s", 0.0) or 0.0), 1
+            ),
             "device_id": link.info.device_id or self.device_id,
             "firmware": link.info.version,
             "ip": link.info.ip,

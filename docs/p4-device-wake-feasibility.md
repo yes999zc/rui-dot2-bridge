@@ -47,8 +47,14 @@ B 的价值是只验机制、不赌中文模型质量；C 才是产品目标，�
 1. adapter \`probe()\` 只在设备**真的能打分**时宣告 \`device_wake\`/\`barge_via_device\`；
    否则有效能力 = manifest ∩ probe 自动降级为 RUI KWS（契约 §2/§5）。
 2. 默认不改变 \`owwOnDevice\`/\`wakeWordEnabled\`（保持 \`off\`），不引入"看起来支持但其实不能用"的状态。
-3. manifest 仍声明 v1 \`wake: {source: device, barge_via_device: true}\`——这是插头的上限声明；
-   运行期由 probe 决定是否生效。降级时 rui 只记 \`device_wake_fallbacks\`，KWS 不受影响。
+3. **1.3.6 起** manifest 改为 **RUI KWS**：`wake: {source: rui}`，capabilities 去掉
+   `device_wake` / `barge_via_device`。原因：本部署 `oww_on_device=off`，而 rui 对
+   「manifest 声明 `source: device`、probe 未证明」每启动一个平面打一条 fallback 警告并
+   消耗 re-probe 预算（19 h 生产：279 条 / 94 次耗尽）。rui-device/v1 不允许
+   `device_wake` 能力与 `source: rui` 共存（`plugins/models.py::_wake_contract`），
+   所以「与部署一致」只能是纯 RUI KWS。设备端唤醒路径的代码/参数保留；真要跑路线 B/C
+   时，按本文档另发一份 device-wake 清单（或改成 `source: device` + 两个 capability，
+   并同时接受由此产生的 probe 警告/re-probe 预算）。
 4. OWW 运行时/模型安装器 **不在本次范围**，需要单独立项（涉及设备文件推送与模型训练）。
 
 ## 五、需要 9 哥 决策

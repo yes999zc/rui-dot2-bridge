@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+import os
 import ssl
 import time
 from collections import deque
@@ -99,6 +101,60 @@ WRITE_LIMIT_BYTES = 32 * 1024
 # send_pcm calls. Beyond that the device is gone: abort and let it reconnect
 # rather than buffering seconds of audio that could replay after a reconnect.
 SEND_WATERMARK_BYTES = 256 * 1024
+# A healthy /data stream carries one mic frame every 80 ms, so a gap of a whole
+# minute is 750 missing frames: the device's uplink is dead even while TCP and
+# /control still look perfect. HALF_OPEN_TIMEOUT_S above only fires when EVERY
+# plane has been quiet for 45 s; the 19h field evidence had /data at rx=0B for
+# 213-468 s while /control still answered an occasional pong, i.e. a permanently
+# deaf link that neither the websockets keepalive nor the half-open rule would
+# ever drop. This is the independent, data-plane-only backstop.
+DATA_SILENCE_TIMEOUT_S = 60.0
+# Deployment override, in seconds (DOT2_DATA_SILENCE_S). The value read at
+# construction is what health() reports, so log and console cannot disagree.
+DATA_SILENCE_TIMEOUT_ENV = "DOT2_DATA_SILENCE_S"
+# A window shorter than one watchdog interval would let this check itself drive
+# a reconnect storm; env values below it are clamped (never the explicit arg).
+DATA_SILENCE_TIMEOUT_MIN_S = WATCHDOG_INTERVAL_S
+
+
+def _env_seconds(name: str, default: float, *, minimum: float) -> float:
+    """Read a positive number of seconds from the environment, fail-safe to ``default``.
+
+    A typo in an env var must never silently disable a watchdog: an unparseable or
+    non-finite value keeps the documented default (logging one warning), and a
+    value below ``minimum`` is clamped so an operator cannot pick a window that
+    turns the watchdog itself into a source of churn.
+    """
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning(
+            "dot2 link: ignoring %s=%r (not a number); keeping %.1f s",
+            name,
+            raw,
+            default,
+        )
+        return default
+    if not math.isfinite(value):
+        log.warning(
+            "dot2 link: ignoring %s=%r (not finite); keeping %.1f s",
+            name,
+            raw,
+            default,
+        )
+        return default
+    if value < minimum:
+        log.warning(
+            "dot2 link: %s=%.1f s is below the %.1f s floor; clamping",
+            name,
+            value,
+            minimum,
+        )
+        return minimum
+    return value
 
 
 @dataclass
@@ -115,6 +171,13 @@ class LinkStats:
     # last_mic_at this is the adapter's proof that the data plane is alive.
     last_pcm_sent_at: float = 0.0
     half_open_drops: int = 0
+    # Data-plane-only silence watchdog (1.3.6): one trip = "/data had received
+    # nothing for DATA_SILENCE_TIMEOUT_S while /control still answered, so the
+    # link was dropped to force a re-register". Kept apart from half_open_drops
+    # (that rule needs EVERY plane quiet) so the log/health can tell the two
+    # failure modes apart. Diagnostics only: no other decision reads these.
+    data_silence_trips: int = 0
+    last_data_silence_at: float = 0.0
     wake_events: int = 0
     invalid_wakes: int = 0
     shadow_crossings: int = 0
@@ -196,6 +259,7 @@ class DeviceLink:
         wake_word_enabled: bool | None = None,
         on_button: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         on_link_lost: Callable[[str], None] | None = None,
+        data_silence_timeout_s: float | None = None,
     ) -> None:
         self.certs_dir = Path(certs_dir) if certs_dir else None
         self.token = token
@@ -267,6 +331,18 @@ class DeviceLink:
         # it to drop its half-sentence buffer: the link has no outbound PCM queue,
         # so a reconnect must not drain bytes the previous connection never saw.
         self.on_link_lost = on_link_lost
+        # Window for the data-plane-only watchdog. The normal case reads
+        # DOT2_DATA_SILENCE_S once, here, so the value health() reports is the one
+        # this process actually enforces. An explicit argument is trusted as-is
+        # (tests, embedding); an env value is clamped to a safe floor.
+        if data_silence_timeout_s is None:
+            self.data_silence_timeout_s = _env_seconds(
+                DATA_SILENCE_TIMEOUT_ENV,
+                DATA_SILENCE_TIMEOUT_S,
+                minimum=DATA_SILENCE_TIMEOUT_MIN_S,
+            )
+        else:
+            self.data_silence_timeout_s = float(data_silence_timeout_s)
 
         self.stats = LinkStats()
         self.info = DeviceInfoReport()
@@ -441,6 +517,10 @@ class DeviceLink:
                 self._enforce_half_open()
             except Exception:  # noqa: BLE001 - a monitor bug must not die silently
                 log.exception("dot2 link: half-open watchdog failed")
+            try:
+                self._enforce_data_silence()
+            except Exception:  # noqa: BLE001 - a monitor bug must not die silently
+                log.exception("dot2 link: data-silence watchdog failed")
 
     def _enforce_half_open(self) -> None:
         """Drop the link when no plane has received anything for the timeout.
@@ -493,6 +573,93 @@ class DeviceLink:
         data = self._data
         if data is not None:
             self._lose_data(data, reason, abort=True)
+
+    def _enforce_data_silence(self) -> None:
+        """Drop a link whose /data plane is deaf while /control is still healthy.
+
+        ``_enforce_half_open`` above requires EVERY plane to be quiet, so a
+        device whose mic stream stops (rx=0B) while its control socket still
+        answers a pong keeps a permanently deaf link: no wake word, no turn, no
+        recovery. This check exists only for that case and is deliberately
+        narrow:
+
+        * both planes must be adopted (a missing plane belongs to the reconnect
+          or the half-open path, not here);
+        * /data must have received NOTHING for ``data_silence_timeout_s``;
+        * the silence must also exceed ``HALF_OPEN_TIMEOUT_S``: the two rules
+          cannot race, because within that window a link with a quiet control
+          plane is exactly what the all-planes rule is about to drop itself;
+        * /control must have received a frame or pong within
+          ``HALF_OPEN_TIMEOUT_S`` - otherwise the half-open rule owns the
+          decision and this one stays out of it;
+        * never while the device is not streaming by design: ``listen_state``
+          "local" (the on-device scorer owns the microphone) or "degraded" (local
+          wake was requested but cannot run, and the firmware refuses to silently
+          fall back to streaming) both mean no uplink is expected;
+        * never while our own playback is live (a normal playback keeps sending
+          frames; cutting a reply is worse than deferring the recovery to the
+          next idle tick).
+
+        The teardown reuses the normal abort path: /data is lost first (so the
+        close counter and its log line stay honest and carry the `close#`), then
+        /control, which is what makes the device register again. Every identity
+        check lives in those helpers, so a socket that was already replaced can
+        never be torn down by this check, and a device that re-registers
+        immediately starts a fresh, silent-but-monitored data plane rather than
+        a trip loop.
+        """
+        if self._closing:
+            return
+        data = self._data
+        control = self._control
+        if data is None or control is None:
+            return
+        data_meter = self._meters.get(id(data))
+        control_meter = self._meters.get(id(control))
+        if data_meter is None or control_meter is None:
+            return
+        # Never fire before the all-planes rule has had its window: a trip is
+        # only justified once "every plane silent" was possible at all.
+        threshold = max(float(self.data_silence_timeout_s), HALF_OPEN_TIMEOUT_S)
+        now = time.monotonic()
+        silent_s = now - data_meter.last_rx_at
+        if silent_s <= threshold:
+            return
+        control_age_s = now - control_meter.last_rx_at
+        if control_age_s > HALF_OPEN_TIMEOUT_S:
+            # /control is quiet too: _enforce_half_open owns that decision.
+            return
+        if self._listen_state in ("local", "degraded"):
+            return
+        playing = self.playing
+        if playing is not None and playing():
+            log.debug(
+                "dot2 link: /data silent %.1f s while playback is live (%s); "
+                "deferring the data-silence trip",
+                silent_s,
+                self.device_id,
+            )
+            return
+        self.stats.data_silence_trips += 1
+        self.stats.last_data_silence_at = now
+        next_close = self.stats.data_plane_closes + 1
+        reason = (
+            f"data plane silent {silent_s:.1f} s while control answers "
+            f"(rx={data_meter.rx_bytes}B, last control frame {control_age_s:.1f} s ago)"
+        )
+        log.warning(
+            "dot2 link: %s (%s) dir=data silent=%.1fs rx=%dB close#%d; "
+            "aborting the link so the device registers again",
+            reason,
+            self.device_id,
+            silent_s,
+            data_meter.rx_bytes,
+            next_close,
+        )
+        # Data first so its close line reports the live counter; _lose_control
+        # then retires /control, which is what forces the re-register.
+        self._lose_data(data, reason, abort=True, abort_reason="data plane silent")
+        self._lose_control(control, reason)
 
     def _abandon(self, conn: ServerConnection, code: int, reason: str) -> None:
         """Drop a socket without waiting for its close handshake.
@@ -1101,12 +1268,15 @@ class DeviceLink:
         quiet: bool = False,
         meter: _ConnMeter | None = None,
         closed: BaseException | None = None,
+        abort_reason: str = "write stalled",
     ) -> None:
         """Drop ``conn`` as the data plane and let the device dial again.
 
         ``abort=True`` kills the TCP socket (a graceful close would itself wait
         on the same full write buffer). The identity check keeps an old socket's
         late timeout from tearing down a connection the device already replaced.
+        ``abort_reason`` is the wire close reason: it names the actual cause
+        (e.g. "data plane silent") instead of always claiming a stalled write.
         """
         meter = meter if meter is not None else self._meters.get(id(conn))
         self._meters.pop(id(conn), None)
@@ -1155,7 +1325,7 @@ class DeviceLink:
             "aborting /data so the device reconnects" if abort else "data plane down",
         )
         if abort:
-            self._abandon(conn, 1011, "write stalled")
+            self._abandon(conn, 1011, abort_reason)
         self._notify_link_lost(reason)
 
     def _enqueue_audio(self, payload: bytes) -> None:

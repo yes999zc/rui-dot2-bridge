@@ -46,11 +46,11 @@ class ManifestLayoutTest(unittest.TestCase):
         # rui 0.6.0 keeps the same plug/adapter contract, but the manifest now uses
         # rui-device/v1 `audio_defaults`, which a pre-0.6 loader rejects
         # (DeviceManifest is extra="forbid"). 1.3.3 raised the lower bound to 0.8.1
-        # and 1.3.5 keeps that window:
+        # and 1.3.6 keeps that window:
         # `audio_defaults.voice` is a 0.8.1 key, and both the 0.7.x line and 0.8.0
         # reject it, so those deployments stay on 1.3.2 (the last 0.7.x build)
         # instead of reaching an "extra inputs are not permitted" error.
-        self.assertEqual(plugin["version"], "1.3.5")
+        self.assertEqual(plugin["version"], "1.3.6")
         # 0.8.1-only window: the floor is the first release that parses
         # `audio_defaults.voice`; the ceiling still spans the next minor.
         self.assertEqual(plugin["rui_compat"], ">=0.8.1 <0.9.0")
@@ -71,11 +71,14 @@ class ManifestLayoutTest(unittest.TestCase):
                 "led",
                 "volume",
                 "keys",
-                "device_wake",
-                "barge_via_device",
             },
         )
-        self.assertEqual(device["wake"], {"source": "device", "barge_via_device": True})
+        # 1.3.6: wake.source=device on a deployment that keeps oww_on_device=off
+        # makes rui log one fallback warning per plane start and spend its bounded
+        # re-probe budget (19h: 279 warnings / 94 probes). rui-device/v1 forbids
+        # `device_wake` / `barge_via_device` capabilities (and wake.barge_via_device)
+        # unless `source: device`, so the deployment-aligned manifest is plain KWS.
+        self.assertEqual(device["wake"], {"source": "rui"})
         # rui 0.6 M1: the plug declares its own hardware audio defaults; they are
         # the bottom layer of manifest < global config < devices[].audio.
         defaults = device["audio_defaults"]
@@ -142,7 +145,7 @@ class ManifestLayoutTest(unittest.TestCase):
 
     def test_wake_block_carries_no_secret_or_address(self) -> None:
         device = yaml.safe_load((PACKAGE / "devices" / "rs03qr.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(set(device["wake"]), {"source", "barge_via_device"})
+        self.assertEqual(set(device["wake"]), {"source"})
         rendered = str(device["wake"]).lower()
         for forbidden in ("token", "secret", "password", "192.168" + ".", "127.0.0.1"):
             self.assertNotIn(forbidden, rendered)
@@ -191,8 +194,8 @@ class RealLoaderTest(unittest.TestCase):
         self.assertEqual(len(plugin.devices), 1)
         device = plugin.devices[0]
         self.assertEqual(device.id, "dot2")
-        self.assertEqual(device.wake_source.value, "device")
-        self.assertTrue(device.barge_via_device_enabled)
+        self.assertEqual(device.wake_source.value, "rui")
+        self.assertFalse(device.barge_via_device_enabled)
         self.assertEqual(device.runtime.mode.value, "in-process")
         defaults = device.audio_defaults
         self.assertIsNotNone(defaults)

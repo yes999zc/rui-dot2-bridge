@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.3.6] - 2026-11-02
+
+### Added
+
+- **`/data` 面独立静默看门狗（永久聋修复）**：`DeviceLink` 在既有的 5 s 看门狗循环里新增
+  `_enforce_data_silence()`，只依赖「最后一次收到 `/data` 帧的时间」
+  （`_ConnMeter.last_rx_at`，正常 80 ms 一帧）。当 `/data` 连续静默超过
+  `DATA_SILENCE_TIMEOUT_S`（默认 **60 s**，env `DOT2_DATA_SILENCE_S` 覆盖，低于 5 s 的
+  env 值会被夹到 5 s）**且** `/control` 在 `HALF_OPEN_TIMEOUT_S`（45 s）内仍收到帧/pong
+  （控制面活着）时，打一条 WARNING（device id、静默秒数、rx 字节、`close#`），然后复用
+  既有 abort/close 路径**先 abort `/data`（关闭计数与 `close#` 照常累加）再拆 `/control`**，
+  让设备重新 register。
+  原 half-open 规则要求**所有平面**静默 45 s 才拆链；19 h 日志里「`/data` 连上后 rx=0B
+  持续 213–468 s、control 仍偶尔回 pong」的链路它永远不会拆 —— 不会拆就意味着永久聋，
+  设备重拨还有 18–24 s 盲区，这正是本条修复的场景。
+  新增 `LinkStats.data_silence_trips` / `last_data_silence_at`；`health()` 新增
+  `data_silence_trips` 与 `data_silence_timeout_s`（`data_idle_ms` 保留不变）。
+  默认安全：60 s ≫ 正常空闲；阈值同时要求超过 `HALF_OPEN_TIMEOUT_S`，两条规则不会抢跑
+  （control 也静默时仍由 half-open 负责，不计 data trip）；`listen_state` 为
+  `local`/`degraded`（设备端打分/降级，本来就不上行）与播放中一律不拆；除既有
+  `_lose_data`/`_lose_control` 外不新增任何裸 socket 操作，身份检查全部沿用。
+
+### Changed
+
+- **设备清单改为 RUI KWS 唤醒**：`devices/rs03qr.yaml` 的 `capabilities` 去掉
+  `device_wake` / `barge_via_device`，`wake` 改为 `{source: rui}`。本部署
+  `oww_on_device=off`，而 rui 对「manifest 声明 `source: device`、probe 未证明」的做法是
+  每启动一个平面打一条
+  `device_wake: manifest declares wake.source=device, but probe() does not advertise it;
+  falling back to RUI KWS`，并消耗有界 re-probe 预算（19 h 生产日志：279 条警告、94 次耗尽）。
+  rui-device/v1 只允许 `device_wake`/`barge_via_device` capability 与 `source: device`
+  同时出现，且 `barge_via_device: true` 也要求 `source: device`
+  （`plugins/models.py::_wake_contract`）——所以 `{source: rui, barge_via_device: true}`
+  会被加载器直接拒载（整个插头失去 adapter），与部署对齐的唯一合法形态是纯 RUI KWS。
+  设备端唤醒的代码/参数（`oww_*`、`drain_wakes()`）保留；需要时按
+  `docs/p4-device-wake-feasibility.md` 单独发 device-wake 清单。
+
+### Notes
+
+- `rui_compat` 不变：仍 `">=0.8.1 <0.9.0"`；`plugin.yaml` / `pyproject.toml` 版本
+  1.3.5 → **1.3.6**。
+- 兼容性：RUI KWS 路径、播放/回声门控、写超时、keepalive、`HALF_OPEN_TIMEOUT_S` 全部不变；
+  唯一新增的拆链场景是「data 面单独聋、control 仍活」。
+
 ## [1.3.5] - 2026-10-29
 
 ### Added

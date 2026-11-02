@@ -6,8 +6,22 @@ vendor: "Amazon / EchoMuse"
 class: B
 transport: inbound
 protocol: {kind: wss, version: "1"}
-capabilities: [playback, led, volume, keys, device_wake, barge_via_device]
-wake: {source: device, barge_via_device: true}
+capabilities: [playback, led, volume, keys]
+# Wake is RUI's own KWS (plug 1.3.6). The bridge can still drive the device-side
+# OWW path (adapter.probe() advertises device_wake only after the firmware proves
+# local scoring), but this manifest must NOT declare it: rui enforces
+# manifest ∩ probe, so a `wake.source: device` declaration on a deployment that
+# runs with oww_on_device=off makes EVERY plane log
+#   "device_wake: manifest declares wake.source=device, but probe() does not
+#    advertise it; falling back to RUI KWS"
+# once per start and burn the bounded re-probe budget (19h production log: 279
+# warnings, 94 probes). rui-device/v1 only allows `device_wake` /
+# `barge_via_device` capabilities with `source: device` (and `barge_via_device:
+# true` requires it too - models.py::_wake_contract), so aligning with the
+# deployment means declaring plain RUI KWS here. A deployment that really runs
+# on-device wake needs its own device-wake manifest, see
+# docs/p4-device-wake-feasibility.md.
+wake: {source: rui}
 # Hardware audio defaults (rui-device/v1, rui 0.6 `audio_defaults`): the bottom
 # layer of the three-layer merge (manifest < global config < devices[].audio).
 # The stock Dot 2 captures mono 16 kHz S16 with no playback reference; the speaker
@@ -32,7 +46,7 @@ device_side:
     - "Unlock the Dot 2 and install the EchoMuse device firmware (v2.18.1 or newer)."
     - "Keep the existing EchoMuse TLS material and X-EM-Token; the adapter reuses them unchanged."
     - "Configure the same wake words as RUI on the device (see params.wake_words)."
-    - "Enable on-device wake only after pushing a matching OWW model; stock firmware has no model for these words."
+    - "This manifest ships RUI KWS: do not push an OWW model or set oww_on_device=on unless you also switch to a device-wake manifest (docs/p4-device-wake-feasibility.md)."
   rollback: "Boot the original firmware slot (server_a) from the device A/B partitions and point its controller URL back at the previous EchoMuse controller."
 runtime: {mode: in-process, entrypoint: "rui_dot2_bridge.adapter:build", listen_port: 8870, token_env: DOT2_EM_TOKEN}
 params:
@@ -49,5 +63,5 @@ params:
   - {key: eq_dir, label: "EQ 曲线目录", type: string, default: "", help: "Read-only vendor EQ_*.cfg directory; empty = shared default (artifacts/eq-prototype, else secrets/eq)."}
   - {key: secrets_dir, label: "凭据目录", type: string, default: "", help: "TLS material and device_token; empty = DOT2_SECRETS_DIR, then secrets/<device id> when present, else secrets."}
   - {key: oww_threshold, label: "设备端唤醒阈值", type: string, default: "", help: "Device-side OWW score threshold; empty keeps the firmware default (0.5)."}
-compatibility: {rui_min: "0.8.1", tested_with: ["0.3.4", "0.4.0", "0.4.1", "0.4.2", "0.5.0", "0.5.1", "0.5.2", "0.6.0", "0.7.9", "0.8.1"], notes: "device_wake is opt-in: it needs a device-side OWW model for the configured wake words; no reference channel (device AEC); audio_defaults (0.6+) declares the mono 16 kHz capture, 48 kHz playback and the 2500 ms ack echo window; `audio_defaults.voice` needs rui 0.8.1+ (0.7.x/0.8.0 loaders reject it), and tested_with entries before 0.8.1 are the 1.3.2 run history — 1.3.2 is the last build for the 0.7.x line."}
+compatibility: {rui_min: "0.8.1", tested_with: ["0.3.4", "0.4.0", "0.4.1", "0.4.2", "0.5.0", "0.5.1", "0.5.2", "0.6.0", "0.7.9", "0.8.1"], notes: "wake.source is rui (plug 1.3.6): the deployment runs oww_on_device=off, and a device wake declaration would make rui log one fallback warning per plane start and spend its re-probe budget; rui-device/v1 only allows device_wake/barge_via_device with source: device, so a device-wake deployment needs its own manifest. no reference channel (device AEC); audio_defaults (0.6+) declares the mono 16 kHz capture, 48 kHz playback and the 2500 ms ack echo window; `audio_defaults.voice` needs rui 0.8.1+ (0.7.x/0.8.0 loaders reject it), and tested_with entries before 0.8.1 are the 1.3.2 run history — 1.3.2 is the last build for the 0.7.x line."}
 acceptance: {verified: false, last_verified: "", evidence: "Contract kit report: artifacts/contract-report.json (rui 0.3.4). Live-device acceptance pending."}

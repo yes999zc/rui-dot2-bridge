@@ -1158,6 +1158,296 @@ class HalfOpenWatchdogTest(unittest.IsolatedAsyncioTestCase):
         data.transport.abort()
 
 
+class DataSilenceWatchdogTest(unittest.IsolatedAsyncioTestCase):
+    """1.3.6: a deaf /data plane with a live /control plane is dropped.
+
+    The half-open rule above needs EVERY plane quiet, so the 19h field pattern
+    (``/data`` at rx=0B for hundreds of seconds while ``/control`` still answered
+    an occasional pong) was never dropped: a permanently deaf link, with an
+    18-24 s device redial blind spot as the only way out. These tests pin the
+    narrow new rule, its safety guards and that it never races the all-planes
+    rule, whose window it deliberately reuses.
+    """
+
+    async def asyncSetUp(self) -> None:
+        interval = mock.patch.object(device_link_module, "WATCHDOG_INTERVAL_S", 0.05)
+        interval.start()
+        self.addCleanup(interval.stop)
+        self.link = DeviceLink(
+            tls_port=None,
+            plain_port=0,
+            token="secret",
+            volume_cap_percent=30.0,
+            push_config=True,
+            # Explicit seam: the env clamp is unit-tested separately below.
+            data_silence_timeout_s=0.3,
+        )
+        await self.link.start()
+        self.port = self.link.bound_ports["plain"]
+        self.addCleanup(self.link.stop)
+
+    async def _register_control(self):
+        ws = await ws_client.connect(
+            f"ws://127.0.0.1:{self.port}/control",
+            additional_headers={"X-EM-Token": "secret"},
+        )
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "register",
+                    "device_id": "D090",
+                    "version": "v2.18.1",
+                    "capabilities": ["mic", "speaker"],
+                }
+            )
+        )
+        for _ in range(4):  # ack, volume_set, config, mic_start
+            await asyncio.wait_for(ws.recv(), 2)
+        return ws
+
+    async def _open_data(self):
+        ws = await ws_client.connect(
+            f"ws://127.0.0.1:{self.port}/data",
+            additional_headers={"X-EM-Token": "secret"},
+        )
+        await asyncio.sleep(0.05)
+        return ws
+
+    async def _wait_until(self, predicate, timeout: float = 3.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            await asyncio.sleep(0.02)
+        self.fail("condition not reached in time")
+
+    async def _expect_closed(self, ws, timeout: float = 3.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                await asyncio.wait_for(ws.recv(), max(0.01, deadline - time.monotonic()))
+            except ConnectionClosed:
+                return
+            except TimeoutError:
+                break
+        self.fail("bridge did not close the socket")
+
+    async def _answer_pings_for(self, ws, seconds: float) -> None:
+        """Keep /control demonstrably alive (a pong per 50 ms ping) for a window."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                raw = await asyncio.wait_for(
+                    ws.recv(), max(0.01, deadline - time.monotonic())
+                )
+            except (TimeoutError, ConnectionClosed):
+                return
+            try:
+                message = json.loads(raw)
+            except ValueError:
+                continue
+            if message.get("type") == "ping":
+                await ws.send(json.dumps({"type": "pong", "id": message["id"]}))
+
+    async def _answer_pings_until_closed(self, ws, timeout: float = 3.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                raw = await asyncio.wait_for(
+                    ws.recv(), max(0.01, deadline - time.monotonic())
+                )
+            except ConnectionClosed:
+                return
+            except TimeoutError:
+                break
+            try:
+                message = json.loads(raw)
+            except ValueError:
+                continue
+            if message.get("type") == "ping":
+                await ws.send(json.dumps({"type": "pong", "id": message["id"]}))
+        self.fail("bridge did not drop the link")
+
+    async def test_a_deaf_data_plane_with_a_live_control_plane_is_dropped(self) -> None:
+        """The 19h pattern: /data rx=0B, /control answers pongs -> re-register."""
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 0.05),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.2),
+        ):
+            control = await self._register_control()
+            data = await self._open_data()
+            await self._wait_until(lambda: self.link.connected.is_set())
+            with self.assertLogs("rui_dot2_bridge.device_link", level="WARNING") as captured:
+                await self._answer_pings_until_closed(control, timeout=3.0)
+
+            self.assertEqual(self.link.stats.data_silence_trips, 1)
+            self.assertEqual(self.link.stats.half_open_drops, 0)
+            self.assertGreater(self.link.stats.last_data_silence_at, 0.0)
+            # The close accounting stays honest: the trip closes the live plane.
+            self.assertEqual(self.link.stats.data_plane_closes, 1)
+            self.assertIsNone(self.link._data)
+            self.assertIsNone(self.link._control)
+            self.assertFalse(self.link.connected.is_set())
+            line = "\n".join(captured.output)
+            self.assertIn("data plane silent", line)
+            self.assertIn("silent=", line)
+            self.assertIn("rx=", line)
+            self.assertIn("close#1", line)
+            self.assertIn("D090", line)
+
+        control.transport.abort()
+        data.transport.abort()
+
+        # The drop is recoverable by design: the device may register again.
+        again = await self._register_control()
+        again_data = await self._open_data()
+        await self._wait_until(lambda: self.link.connected.is_set())
+        self.assertIsNotNone(self.link._control)
+        self.assertEqual(self.link.stats.data_silence_trips, 1)
+        again.transport.abort()
+        again_data.transport.abort()
+
+    async def test_a_streaming_data_plane_is_never_tripped(self) -> None:
+        """The normal 80 ms stream is liveness: no trip, however idle the room."""
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 0.05),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.2),
+        ):
+            control = await self._register_control()
+            data = await self._open_data()
+            await self._wait_until(lambda: self.link.connected.is_set())
+            deadline = time.monotonic() + 0.9  # 3x the silence threshold
+            seq = 0
+            while time.monotonic() < deadline:
+                await data.send(bytes([FRAME_MIC]) + seq.to_bytes(2, "big") + bytes(320))
+                seq += 1
+                await asyncio.sleep(0.02)
+
+            self.assertEqual(self.link.stats.data_silence_trips, 0)
+            self.assertIsNotNone(self.link._data)
+            self.assertIsNotNone(self.link._control)
+            self.assertTrue(self.link.connected.is_set())
+        control.transport.abort()
+        data.transport.abort()
+
+    async def test_both_planes_silent_stays_with_the_half_open_rule(self) -> None:
+        """No pong and no frame: the all-planes rule owns it, not the data rule."""
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 3600.0),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.2),
+        ):
+            ws = await self._register_control()
+            data = await self._open_data()
+            with self.assertLogs("rui_dot2_bridge.device_link", level="WARNING") as captured:
+                await self._expect_closed(ws, timeout=3.0)
+            self.assertEqual(self.link.stats.half_open_drops, 1)
+            self.assertEqual(self.link.stats.data_silence_trips, 0)
+            self.assertIn("half-open", "\n".join(captured.output))
+        ws.transport.abort()
+        data.transport.abort()
+
+    async def test_playback_defers_the_trip_until_the_link_is_idle(self) -> None:
+        """A live reply is never cut: the trip waits for the next idle tick."""
+        state = {"playing": True}
+        self.link.playing = lambda: state["playing"]
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 0.05),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.2),
+        ):
+            control = await self._register_control()
+            data = await self._open_data()
+            await self._answer_pings_for(control, 0.9)  # > 3x threshold
+            self.assertEqual(self.link.stats.data_silence_trips, 0)
+            self.assertIsNotNone(self.link._control)
+
+            state["playing"] = False
+            with self.assertLogs("rui_dot2_bridge.device_link", level="WARNING"):
+                await self._answer_pings_until_closed(control, timeout=3.0)
+            self.assertEqual(self.link.stats.data_silence_trips, 1)
+        control.transport.abort()
+        data.transport.abort()
+
+    async def test_non_streaming_listen_states_are_not_data_silence(self) -> None:
+        """local/degraded mean "no uplink by design"; leaving them re-arms the rule."""
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 0.05),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.2),
+        ):
+            control = await self._register_control()
+            data = await self._open_data()
+            for state in ("local", "degraded"):
+                await control.send(json.dumps({"type": "listen_state", "state": state}))
+                await self._wait_until(
+                    lambda expected=state: self.link._listen_state == expected
+                )
+                await self._answer_pings_for(control, 0.9)  # > 3x threshold
+                self.assertEqual(
+                    self.link.stats.data_silence_trips, 0, f"tripped while {state}"
+                )
+                self.assertIsNotNone(self.link._data)
+
+            # Back to streaming: the same silence is now a fault again. The trip
+            # resets _listen_state, so wait for the dropped link, not for "stream".
+            await control.send(json.dumps({"type": "listen_state", "state": "stream"}))
+            with self.assertLogs("rui_dot2_bridge.device_link", level="WARNING"):
+                await self._answer_pings_until_closed(control, timeout=3.0)
+            self.assertEqual(self.link.stats.data_silence_trips, 1)
+        control.transport.abort()
+        data.transport.abort()
+
+
+class DataSilenceThresholdTest(unittest.IsolatedAsyncioTestCase):
+    """DOT2_DATA_SILENCE_S: default, override, and the fail-safe clamp."""
+
+    @staticmethod
+    def _env(**values):
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key != device_link_module.DATA_SILENCE_TIMEOUT_ENV
+        }
+        env.update(values)
+        return mock.patch.dict(os.environ, env, clear=True)
+
+    def _make(self, **kwargs) -> DeviceLink:
+        return DeviceLink(tls_port=None, plain_port=None, token=None, **kwargs)
+
+    async def test_default_is_sixty_seconds(self) -> None:
+        with self._env():
+            link = self._make()
+        self.assertEqual(link.data_silence_timeout_s, device_link_module.DATA_SILENCE_TIMEOUT_S)
+        self.assertEqual(link.data_silence_timeout_s, 60.0)
+
+    async def test_the_environment_overrides_the_default(self) -> None:
+        with self._env(DOT2_DATA_SILENCE_S="12.5"):
+            link = self._make()
+        self.assertEqual(link.data_silence_timeout_s, 12.5)
+
+    async def test_a_typo_falls_back_to_the_default(self) -> None:
+        with self._env(DOT2_DATA_SILENCE_S="sixty"), self.assertLogs(
+            "rui_dot2_bridge.device_link", level="WARNING"
+        ):
+            link = self._make()
+        self.assertEqual(link.data_silence_timeout_s, device_link_module.DATA_SILENCE_TIMEOUT_S)
+
+    async def test_a_too_small_value_is_clamped_to_one_watchdog_interval(self) -> None:
+        with self._env(DOT2_DATA_SILENCE_S="0.5"), self.assertLogs(
+            "rui_dot2_bridge.device_link", level="WARNING"
+        ):
+            link = self._make()
+        self.assertEqual(
+            link.data_silence_timeout_s, device_link_module.DATA_SILENCE_TIMEOUT_MIN_S
+        )
+        self.assertEqual(
+            link.data_silence_timeout_s, device_link_module.WATCHDOG_INTERVAL_S
+        )
+
+    async def test_an_explicit_argument_wins_over_the_environment(self) -> None:
+        with self._env(DOT2_DATA_SILENCE_S="99"):
+            link = self._make(data_silence_timeout_s=0.3)
+        self.assertEqual(link.data_silence_timeout_s, 0.3)
+
+
 class VolumeMathTest(unittest.TestCase):
     def test_cap_holds_against_requests(self) -> None:
         from rui_dot2_bridge.volume import clamp_percent, percent_to_level

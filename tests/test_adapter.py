@@ -39,6 +39,8 @@ class FakeStats:
         self.wake_events = 0
         self.invalid_wakes = 0
         self.half_open_drops = 0
+        # 1.3.6 data-plane-only watchdog counter; health() must pass it through.
+        self.data_silence_trips = 2
         # A fake link models a live microphone by default: health() requires a
         # data-plane sample fresher than SPEAKER_STALE_S (P0b-C2).
         self.last_mic_at = time.monotonic()
@@ -63,6 +65,9 @@ class FakeLink:
         self.reported_level = 38
         self.volume_cap_percent = 30.0
         self.aec_enabled = True
+        # 1.3.6: the effective data-silence window is reported by health(); the
+        # fake link pins the pass-through (a real DeviceLink is covered in test_link).
+        self.data_silence_timeout_s = 60.0
         # Live-link proof of on-device wake scoring; probe() gates on this.
         self.device_wake_available = False
 
@@ -236,6 +241,12 @@ class VolumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(health["connected"])
         self.assertEqual(health["device_id"], "dot2")
         self.assertIn("1 mic + 0 ref", health["profile"])
+        # Plug 1.3.6: the data-plane-only watchdog is observable from /health,
+        # next to data_idle_ms and half_open_drops.
+        self.assertEqual(health["data_silence_trips"], 2)
+        self.assertEqual(health["data_silence_timeout_s"], 60.0)
+        self.assertIn("data_idle_ms", health)
+        self.assertIn("half_open_drops", health)
 
 
 class HealthFreshnessTest(unittest.IsolatedAsyncioTestCase):
