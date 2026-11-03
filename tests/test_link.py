@@ -1367,6 +1367,53 @@ class DataSilenceWatchdogTest(unittest.IsolatedAsyncioTestCase):
         control.transport.abort()
         data.transport.abort()
 
+    async def test_muted_device_does_not_trigger_silence_reconnect(self) -> None:
+        """Physical mute intentionally stops uplink; unmute gets a fresh grace period."""
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 0.05),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.2),
+        ):
+            control = await self._register_control()
+            data = await self._open_data()
+            await control.send(json.dumps({"type": "mute_state", "muted": True}))
+            await self._wait_until(lambda: self.link.muted_known and self.link.muted)
+            await self._answer_pings_for(control, 0.9)
+            self.assertEqual(self.link.stats.data_silence_trips, 0)
+            self.assertIsNotNone(self.link._data)
+
+            await control.send(json.dumps({"type": "mute_state", "muted": False}))
+            await self._wait_until(lambda: not self.link.muted)
+            await self._answer_pings_for(control, 0.1)
+            self.assertEqual(self.link.stats.data_silence_trips, 0)
+            with self.assertLogs("rui_dot2_bridge.device_link", level="WARNING"):
+                await self._answer_pings_until_closed(control, timeout=3.0)
+            self.assertEqual(self.link.stats.data_silence_trips, 1)
+        control.transport.abort()
+        data.transport.abort()
+
+    async def test_previous_connection_mute_does_not_hide_new_silent_fault(self) -> None:
+        """A mute report from a prior connection is not evidence about this one."""
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 0.05),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.2),
+        ):
+            control = await self._register_control()
+            data = await self._open_data()
+            await control.send(json.dumps({"type": "mute_state", "muted": True}))
+            await self._wait_until(lambda: self.link.muted_known and self.link.muted)
+            control.transport.abort()
+            data.transport.abort()
+            await self._wait_until(lambda: self.link._control is None)
+
+            control = await self._register_control()
+            data = await self._open_data()
+            self.assertFalse(self.link._mute_reported_on_control)
+            with self.assertLogs("rui_dot2_bridge.device_link", level="WARNING"):
+                await self._answer_pings_until_closed(control, timeout=3.0)
+            self.assertEqual(self.link.stats.data_silence_trips, 1)
+        control.transport.abort()
+        data.transport.abort()
+
     async def test_non_streaming_listen_states_are_not_data_silence(self) -> None:
         """local/degraded mean "no uplink by design"; leaving them re-arms the rule."""
         with (

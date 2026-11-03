@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Do not treat a confirmed physical mute on the current control connection as a silent-data
+  failure. After unmute, allow a full watchdog window for microphone capture to resume. A mute
+  reported only on a previous connection does not suppress detection of a new silent link.
+
 ## [1.3.6] - 2026-11-02
 
 ### Added

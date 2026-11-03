@@ -327,6 +327,10 @@ class DeviceLink:
         # persists its own mute across boots.
         self.muted = False
         self.muted_known = False
+        # Only a mute report from the current control connection can suppress
+        # the data-silence watchdog; the user may unmute while disconnected.
+        self._mute_reported_on_control = False
+        self._last_unmuted_at = 0.0
         # A sync callback for "the device link just went away". The adapter uses
         # it to drop its half-sentence buffer: the link has no outbound PCM queue,
         # so a reconnect must not drain bytes the previous connection never saw.
@@ -622,7 +626,11 @@ class DeviceLink:
         # only justified once "every plane silent" was possible at all.
         threshold = max(float(self.data_silence_timeout_s), HALF_OPEN_TIMEOUT_S)
         now = time.monotonic()
-        silent_s = now - data_meter.last_rx_at
+        if self._mute_reported_on_control and self.muted:
+            # Physical mute intentionally stops the microphone; reconnecting
+            # repeatedly cannot and must not override the user's choice.
+            return
+        silent_s = now - max(data_meter.last_rx_at, self._last_unmuted_at)
         if silent_s <= threshold:
             return
         control_age_s = now - control_meter.last_rx_at
@@ -729,6 +737,7 @@ class DeviceLink:
         self._listen_state = ""
         self._scoring_evidence = False
         self._reported_level = None
+        self._mute_reported_on_control = False
         # Pongs for pings the old socket never answered must not be counted as
         # this connection's.
         self._pong_waiters.clear()
@@ -886,6 +895,8 @@ class DeviceLink:
             if not await self._register_control(conn, meter):
                 return
             async for raw in conn:
+                if conn is not self._control:
+                    break  # a superseded socket cannot update the current device state
                 meter.rx_bytes += len(raw)
                 meter.last_rx_at = time.monotonic()
                 await self._on_control_message(raw)
@@ -1079,8 +1090,12 @@ class DeviceLink:
     def _set_muted(self, value: object) -> None:
         """Record a reported mute state; anything non-boolean is ignored, not guessed."""
         if isinstance(value, bool):
+            if self.muted_known and self.muted and not value:
+                # Give the device a full silence window to restart capture.
+                self._last_unmuted_at = time.monotonic()
             self.muted = value
             self.muted_known = True
+            self._mute_reported_on_control = True
 
     async def _dispatch_button(self, message: dict[str, Any]) -> None:
         """Hand one button/state frame to the adapter; a handler bug cannot kill the link."""
