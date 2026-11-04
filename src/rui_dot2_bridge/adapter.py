@@ -1288,7 +1288,8 @@ def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
     # -- audio / tuning -------------------------------------------------------
     mute = _flag(env.get("DOT2_MUTE"))
     aec_manifest = str(plug_manifest.get(manifest, "capabilities", "aec", default="device"))
-    aec_enabled = _flag(env.get("DOT2_AEC_ENABLED"), aec_manifest != "none")
+    aec_enabled = _flag(params.get("aec_enabled"), env.get("DOT2_AEC_ENABLED"),
+                        aec_manifest != "none")
     mic_channels = _optional_int(
         params.get("mic_channels"),
         env.get("DOT2_MIC_CHANNELS"),

@@ -96,6 +96,22 @@ class DeviceDefaultsTest(unittest.TestCase):
 class ResolutionOrderTest(unittest.TestCase):
     """Acceptance 2: params > env > default for all five keys."""
 
+    def test_mixed_aec_paths_ignore_the_other_rooms_host_default(self) -> None:
+        with clean_env({"DOT2_AEC_ENABLED": "false"}):
+            reference = build(device(params={"aec_enabled": False, "ref_channels": 1}), None)
+            mono = build(device(id="dot2-b", params={"aec_enabled": True}), None)
+            legacy = build(device(id="dot2-c"), None)
+        self.assertFalse(reference._link_kwargs["aec_enabled"])
+        self.assertTrue(mono._link_kwargs["aec_enabled"])
+        self.assertFalse(legacy._link_kwargs["aec_enabled"])
+        self.assertTrue(reference._link_kwargs["ref_uplink"])
+        self.assertFalse(mono._link_kwargs["ref_uplink"])
+
+    def test_explicit_aec_false_overrides_an_enabled_host_default(self) -> None:
+        with clean_env({"DOT2_AEC_ENABLED": "true"}):
+            adapter = build(device(params={"aec_enabled": False}), None)
+        self.assertFalse(adapter._link_kwargs["aec_enabled"])
+
     def test_params_outrank_env_for_all_five_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             params_secrets = Path(directory, "secrets-a")
