@@ -59,7 +59,7 @@ class ManifestCompatTest(unittest.TestCase):
         for path in MANIFESTS:
             compat = yaml.safe_load(path.read_text(encoding="utf-8"))["rui_compat"]
             window = _specifier(compat)
-            for version in ("0.8.1", "0.8.2", "0.8.9"):
+            for version in ("0.8.1", "0.8.2", "0.8.9", "0.8.15", "0.8.17"):
                 self.assertTrue(
                     window.contains(version),
                     f"{path}: {compat} must accept {version}",

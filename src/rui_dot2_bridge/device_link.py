@@ -330,6 +330,9 @@ class DeviceLink:
         # Only a mute report from the current control connection can suppress
         # the data-silence watchdog; the user may unmute while disconnected.
         self._mute_reported_on_control = False
+        # Device-observed reference state, never the requested AEC configuration.
+        # Each control connection must provide its own first report.
+        self._last_reported_aec_ref: str | None = None
         self._last_unmuted_at = 0.0
         # A sync callback for "the device link just went away". The adapter uses
         # it to drop its half-sentence buffer: the link has no outbound PCM queue,
@@ -738,6 +741,7 @@ class DeviceLink:
         self._scoring_evidence = False
         self._reported_level = None
         self._mute_reported_on_control = False
+        self._last_reported_aec_ref = None
         # Pongs for pings the old socket never answered must not be counted as
         # this connection's.
         self._pong_waiters.clear()
@@ -1073,6 +1077,14 @@ class DeviceLink:
             await self._dispatch_button(message)
         elif kind == "stats":
             log.debug("dot2 link: stats %s", message)
+            aec_ref = message.get("aecRef")
+            if (
+                isinstance(aec_ref, str)
+                and aec_ref in ("off", "hw", "sw")
+                and aec_ref != self._last_reported_aec_ref
+            ):
+                self._last_reported_aec_ref = aec_ref
+                log.info("dot2 link: device stats %s aecRef=%s", self.device_id, aec_ref)
         elif kind == "log":
             line = f"[device {message.get('level', '?')}] {message.get('message', '')}"
             self._device_log.append(line)
