@@ -43,7 +43,7 @@
 
 | 情况 | 行为 |
 |---|---|
-| token 不匹配 | adapter 记录并拒绝握手（不静默接受）；开发期可配置 `allow_any_token` 但启动时告警 |
+| token 未配置或不匹配 | adapter 记录并拒绝控制/数据握手；隔离开发须显式 `DOT2_ALLOW_UNAUTHENTICATED=1`，且不绕过已配置 token |
 | 设备断线 | `frames()` 不抛异常，继续等下一次 `register`（rui 的平面按此设计） |
 | 设备版本缺 `register` 字段 | 忽略未知字段，按默认能力处理 |
 | TLS 证书缺失 | adapter 启动失败并说明路径，不静默降级为明文（设备只认 wss） |

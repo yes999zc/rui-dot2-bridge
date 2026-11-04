@@ -201,6 +201,7 @@ class Dot2Adapter(DeviceAdapter):
         secrets_dir: str | Path = "secrets",
         tls_port: int = DEFAULT_TLS_PORT,
         token: str | None = None,
+        allow_unauthenticated: bool = False,
         volume_cap_percent: float = VOLUME_CAP_PERCENT,
         push_config: bool = True,
         aec_enabled: bool = True,
@@ -293,7 +294,8 @@ class Dot2Adapter(DeviceAdapter):
         self._link: DeviceLink | None = None
         self._link_kwargs = {
             "certs_dir": Path(secrets_dir),
-            "token": token,
+            "token": token.strip() if isinstance(token, str) else None,
+            "allow_unauthenticated": allow_unauthenticated is True,
             "tls_port": tls_port,
             "plain_port": None,
             "device_id": device_id,
@@ -506,8 +508,11 @@ class Dot2Adapter(DeviceAdapter):
         socket liveness; unknown or unmuted silence retains the stale timeout.
         """
         link = self._link
+        auth_configured = bool(self._link_kwargs.get("token"))
         if link is None:
-            return {"connected": False, "error": "adapter not open"}
+            return {"connected": False, "control_connected": False,
+                    "muted_known": None, "auth_configured": auth_configured,
+                    "error": "adapter not open"}
         stats = link.stats
         data_plane = bool(getattr(link, "data_plane_up", False))
         last_mic = float(getattr(stats, "last_mic_at", 0.0) or 0.0)
@@ -533,6 +538,10 @@ class Dot2Adapter(DeviceAdapter):
         )
         return {
             "connected": connected,
+            # The adopted registered control socket is a separate fact from
+            # data freshness and the composite playback-availability gate.
+            "control_connected": bool(getattr(link, "control_plane_up", False)),
+            "auth_configured": auth_configured,
             # task-18: the physical mute key's observed state, per device. This is
             # NOT DOT2_MUTE (a deploy-time volume cap): the key works without a
             # restart, and this field is how rui's /health sees it.
@@ -1255,12 +1264,15 @@ def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
         if token:
             token_source = "file"
     token = token or None
+    allow_unauthenticated = _flag(env.get("DOT2_ALLOW_UNAUTHENTICATED"))
     if token is None:
         log.warning(
             "dot2 adapter: no X-EM-Token in $%s or %s/device_token; "
-            "the admission check is disabled",
+            "%s",
             token_env,
             secrets_dir,
+            ("explicit development mode allows unauthenticated connections"
+             if allow_unauthenticated else "connections will be refused"),
         )
     else:
         log.info("dot2 adapter: X-EM-Token source: %s", token_source)
@@ -1349,6 +1361,7 @@ def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
         secrets_dir=secrets_dir,
         tls_port=int(listen_port or DEFAULT_TLS_PORT),
         token=token,
+        allow_unauthenticated=allow_unauthenticated,
         volume_cap_percent=volume_cap_percent,
         aec_enabled=aec_enabled,
         oww_on_device=oww_on_device,

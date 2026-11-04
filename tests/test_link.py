@@ -15,6 +15,7 @@ import os
 import socket
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import websockets.asyncio.client as ws_client
@@ -31,6 +32,26 @@ from rui_dot2_bridge.frames import (
     SPEAKER_CHUNK_BYTES,
 )
 from rui_dot2_bridge.volume import capped_level
+
+
+class AuthenticationTest(unittest.TestCase):
+    def test_missing_token_is_closed_unless_development_was_explicitly_enabled(self) -> None:
+        connection = SimpleNamespace(request=SimpleNamespace(headers={}))
+        for supplied in (None, "", "   "):
+            link = DeviceLink(token=supplied, tls_port=None, plain_port=None)
+            self.assertFalse(link._authorized(connection))
+        enabled = DeviceLink(token=None, allow_unauthenticated=True, tls_port=None, plain_port=None)
+        self.assertTrue(enabled._authorized(connection))
+        malformed = DeviceLink(token=None, allow_unauthenticated="false", tls_port=None, plain_port=None)
+        self.assertFalse(malformed._authorized(connection))
+
+    def test_configured_token_stays_required_even_when_development_flag_is_set(self) -> None:
+        link = DeviceLink(token="fixture-token", allow_unauthenticated=True,
+                          tls_port=None, plain_port=None)
+        for supplied, allowed in ((None, False), ("wrong", False), ("fixture-token", True)):
+            with self.subTest(supplied=supplied):
+                connection = SimpleNamespace(request=SimpleNamespace(headers={"X-EM-Token": supplied}))
+                self.assertIs(link._authorized(connection), allowed)
 
 
 class LinkTest(unittest.IsolatedAsyncioTestCase):
@@ -102,6 +123,24 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
                 refusal = closed
             if refusal is not None:
                 self.assertIsInstance(refusal, (ConnectionClosed, TimeoutError))
+
+    async def test_missing_configured_token_refuses_both_control_and_data(self) -> None:
+        self.link.token = None
+        for path in ("control", "data"):
+            with self.subTest(path=path):
+                async with ws_client.connect(f"ws://127.0.0.1:{self.port}/{path}") as ws:
+                    message = json.loads(await asyncio.wait_for(ws.recv(), 2))
+                    self.assertEqual(message, {"type": "refused"})
+                    await asyncio.wait_for(ws.wait_closed(), 2)
+                    self.assertEqual(ws.close_code, 1008)
+        self.assertFalse(self.link.connected.is_set())
+
+    async def test_explicit_development_mode_can_register_without_a_token(self) -> None:
+        self.link.token = None
+        self.link.allow_unauthenticated = True
+        async with self._control(token="") as ws:
+            message = json.loads(await asyncio.wait_for(ws.recv(), 2))
+            self.assertEqual(message["type"], "ack")
 
     async def test_mic_frames_are_queued(self) -> None:
         async with ws_client.connect(
@@ -288,6 +327,7 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
             oww_on_device="on",
             oww_model="hey_jarvis_v0.1",
             oww_threshold=0.6,
+            allow_unauthenticated=True,
         )
         await link.start()
         port = link.bound_ports["plain"]
@@ -317,6 +357,7 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
             plain_port=0,
             oww_on_device="on",
             playing=lambda: True,
+            allow_unauthenticated=True,
         )
         await link.start()
         port = link.bound_ports["plain"]
@@ -360,6 +401,7 @@ class AdapterWakePathTest(unittest.IsolatedAsyncioTestCase):
             oww_on_device="on",
             wake_word_enabled=True,
             wake_queue=self.adapter._wakes,
+            allow_unauthenticated=True,
         )
         await self.link.start()
         self.port = self.link.bound_ports["plain"]

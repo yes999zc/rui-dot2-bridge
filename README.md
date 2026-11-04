@@ -45,6 +45,10 @@ rui 起一个音频平面 → 插件连上设备（wss 控制通道 + 双向音�
 - **播放期门控**：`DOT2_PLAYBACK_GATE_MS` 控制「播放时静音上行」的时长（`0` = 交给设备 AEC，配合服务端中文 KWS 时可实现播放中打断）。
 - **EQ 与限幅**：`dsp.py` 按房间响度目标做低切与高频搁架，并保证不削波（目标值可用 `/loudness` 复核）。
 - **可观测**：`plug-test` 跑契约自测；设备状态、重连、丢包都进 rui 的日志与轨迹。
+- **认证**：缺少 `X-EM-Token` 配置时默认拒绝控制和数据连接。仅隔离开发可显式设置
+  `DOT2_ALLOW_UNAUTHENTICATED=1`；配置了 token 时该开关不会绕过校验。健康信息的
+  `auth_configured` 只表示凭据已配置，不返回值；`control_connected` 独立报告已接管的控制连接，
+  不用音频新鲜度或数据通道代替。
 
 ### 物理按键
 
@@ -177,6 +181,10 @@ Source: [`docs/assets/architecture.mmd`](docs/assets/architecture.mmd); exports 
 - **No core changes**: the plug speaks `rui-device/v1` and the core image stays untouched; this repo and the core are released independently, and `rui_compat` declares the window that can load it.
 - **Duplex audio**: microphone uplink and playback downlink are separate; play/stop/volume/LED are individual commands.
 - **Playback gate**: `DOT2_PLAYBACK_GATE_MS` sets how long the uplink is muted while playing (`0` = leave it to the device AEC, which enables barge-in together with server-side Chinese KWS).
+- **Authentication**: missing token configuration refuses both control and data connections.
+  Isolated development may explicitly set `DOT2_ALLOW_UNAUTHENTICATED=1`; a configured token
+  remains required. Health exposes only `auth_configured`, plus a separate
+  `control_connected` fact that is independent of audio freshness and the data socket.
 - **EQ and limiting**: `dsp.py` applies a low cut and high shelf toward the room's loudness target without clipping (verify with `/loudness`).
 - **Observability**: `plug-test` runs the contract suite; device state, reconnects and drops show up in rui logs and traces.
 

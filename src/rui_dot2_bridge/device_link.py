@@ -3,8 +3,8 @@
 This speaks the subset of ``docs/device-controller-interface.md`` that a voice
 satellite needs (see ``docs/protocol-map.md``):
 
-* two websockets, ``/control`` (JSON) and ``/data`` (binary), with the device's
-  ``X-EM-Token`` header when it has a token installed;
+* two websockets, ``/control`` (JSON) and ``/data`` (binary), requiring the
+  configured ``X-EM-Token`` unless isolated development explicitly opts out;
 * ``register`` -> ``ack``, then ``mic_start(lock_mic=false)`` for the
   continuous 80 ms mono stream;
 * uplink ``0x01`` frames are queued for the audio plane; downlink ``0x02``
@@ -22,6 +22,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import ssl
 import time
 from collections import deque
@@ -235,6 +236,7 @@ class DeviceLink:
         *,
         certs_dir: str | Path | None = None,
         token: str | None = None,
+        allow_unauthenticated: bool = False,
         tls_port: int | None = 8870,
         plain_port: int | None = None,
         bind_host: str = "0.0.0.0",
@@ -262,7 +264,10 @@ class DeviceLink:
         data_silence_timeout_s: float | None = None,
     ) -> None:
         self.certs_dir = Path(certs_dir) if certs_dir else None
-        self.token = token
+        self.token = token.strip() if isinstance(token, str) else None
+        self.allow_unauthenticated = allow_unauthenticated is True
+        if self.allow_unauthenticated and not self.token:
+            log.warning("dot2 link: explicit development mode allows connections without X-EM-Token")
         self.tls_port = tls_port
         self.plain_port = plain_port
         self.bind_host = bind_host
@@ -865,14 +870,16 @@ class DeviceLink:
 
     def _authorized(self, conn: ServerConnection) -> bool:
         if not self.token:
-            return True
-        return conn.request.headers.get("X-EM-Token") == self.token
+            return self.allow_unauthenticated
+        supplied = conn.request.headers.get("X-EM-Token")
+        return isinstance(supplied, str) and secrets.compare_digest(
+            supplied.encode("utf-8"), self.token.encode("utf-8"))
 
     async def _handle(self, conn: ServerConnection) -> None:
         path = conn.request.path.split("?", 1)[0]
         if not self._authorized(conn):
             log.warning(
-                "dot2 link: refused %s from %s: reason=token mismatch", path, conn.remote_address
+                "dot2 link: refused %s from %s: reason=token missing or mismatch", path, conn.remote_address
             )
             await _send_json(conn, {"type": "refused"})
             await _quiet_close(conn, 1008, "token")

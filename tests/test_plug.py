@@ -148,6 +148,15 @@ class BuildParamsTest(unittest.TestCase):
                 adapter = build(device, None)
         self.assertEqual(adapter._link_kwargs["token"], "filetok")
 
+    def test_unauthenticated_development_mode_requires_an_explicit_boolean_env(self) -> None:
+        for value, expected in ((None, False), ("0", False), ("false", False),
+                                ("typo", False), ("1", True), ("true", True)):
+            with self.subTest(value=value):
+                values = {} if value is None else {"DOT2_ALLOW_UNAUTHENTICATED": value}
+                with self.env(values):
+                    adapter = build(self.device(), None)
+                self.assertIs(adapter._link_kwargs["allow_unauthenticated"], expected)
+
     def test_device_wake_is_off_unless_a_model_is_configured(self) -> None:
         with self.env():
             adapter = build(self.device(), None)

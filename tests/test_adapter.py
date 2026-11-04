@@ -250,13 +250,38 @@ class VolumeTest(unittest.IsolatedAsyncioTestCase):
 
 
 class HealthFreshnessTest(unittest.IsolatedAsyncioTestCase):
-    """P0b-C2: `connected` is a data-plane fact, not a sticky socket flag.
+    """Keep composite data availability separate from explicit control facts.
 
-    The dot2 /data socket can stay open while the device is gone (power cut,
-    firmware hang); `data_connects > 0` then says "it connected once", which is
-    what made `speaker_connected` stick for 887 s in the field. Health therefore
-    needs a recent received mic frame or a recent successful PCM write.
+    The dot2 /data socket can stay open while a device is gone; a past connection
+    is not fresh speaker evidence. Control adoption and configured authentication
+    are independent facts, including when the data stream is stale or absent.
     """
+
+    def test_control_connection_is_explicit_and_independent_of_data_freshness(self) -> None:
+        adapter = make_adapter()
+        link = adapter._link
+        link.control_plane_up = True
+        link.data_plane_up = False
+        link.connected.clear()
+        link.stats.last_mic_at = 0.0
+        health = adapter.health()
+        self.assertFalse(health["connected"])
+        self.assertTrue(health["control_connected"])
+        link.control_plane_up = False
+        link.data_plane_up = True
+        link.connected.set()
+        link.stats.last_mic_at = time.monotonic()
+        self.assertFalse(adapter.health()["control_connected"])
+
+    def test_auth_configuration_is_available_offline_without_exposing_the_token(self) -> None:
+        adapter = Dot2Adapter("dot2", host="127.0.0.1", token="fixture-token")
+        health = adapter.health()
+        self.assertTrue(health["auth_configured"])
+        self.assertFalse(health["control_connected"])
+        self.assertIsNone(health["muted_known"])
+        self.assertNotIn("fixture-token", json.dumps(health))
+        adapter = Dot2Adapter("dot2", host="127.0.0.1", token="   ")
+        self.assertFalse(adapter.health()["auth_configured"])
 
     def _adapter(self) -> Dot2Adapter:
         adapter = make_adapter()
@@ -405,6 +430,19 @@ class AdapterLinkFreshnessTest(unittest.IsolatedAsyncioTestCase):
                 return
             await asyncio.sleep(0.02)
         self.fail("condition not reached in time")
+
+    async def test_control_fact_remains_true_after_only_the_data_socket_closes(self) -> None:
+        ctl = await self._register()
+        data = await self._mic()
+        await self._wait_until(lambda: self.adapter.health()["connected"])
+        self.assertTrue(self.adapter.health()["control_connected"])
+        data.transport.abort()
+        await self._wait_until(lambda: not self.link.data_plane_up)
+        self.assertFalse(self.adapter.health()["connected"])
+        self.assertTrue(self.adapter.health()["control_connected"])
+        ctl.transport.abort()
+        await self._wait_until(lambda: not self.link.control_plane_up)
+        self.assertFalse(self.adapter.health()["control_connected"])
 
     async def asyncTearDown(self) -> None:
         for ws in self._sockets:
