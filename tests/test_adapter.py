@@ -502,13 +502,71 @@ class LedTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((leds[0]["r"], leds[0]["g"], leds[0]["b"]), (0, 40, 160))
         self.assertFalse(listening)
 
-    async def test_wake_marks_the_ring_listening(self) -> None:
+    async def test_wake_is_white_without_claiming_an_open_listening_gate(self) -> None:
         adapter = make_adapter()
         link: FakeLink = adapter._link  # type: ignore[assignment]
         await adapter.set_led("wake")
         leds, listening = link.leds[-1]
-        self.assertTrue(listening)
-        self.assertEqual((leds[0]["r"], leds[0]["g"], leds[0]["b"]), (0, 150, 70))
+        self.assertFalse(listening)
+        self.assertEqual((leds[0]["r"], leds[0]["g"], leds[0]["b"]), (120, 120, 120))
+
+    async def test_semantic_palette_reserves_green_for_listening(self) -> None:
+        expected = {
+            "off": (0, 0, 0),
+            "idle": (0, 0, 0),
+            "wake": (120, 120, 120),
+            "listening": (0, 160, 80),
+            "thinking": (0, 40, 160),
+            "speaking": (0, 110, 150),
+            "music": (100, 0, 140),
+            "music_paused": (120, 60, 0),
+            "muted": (120, 0, 0),
+            "error": (170, 0, 0),
+        }
+        self.assertEqual(set(adapter_module.LED_COLORS), set(expected))
+        adapter = make_adapter()
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        for effect, rgb in expected.items():
+            with self.subTest(effect=effect):
+                await adapter.set_led(effect)
+                leds, listening = link.leds[-1]
+                self.assertEqual(leds, [
+                    {"id": index, "r": rgb[0], "g": rgb[1], "b": rgb[2]}
+                    for index in range(12)
+                ])
+                self.assertIs(listening, effect == "listening")
+                self.assertIs(rgb == (0, 160, 80), effect == "listening")
+
+    async def test_explicit_color_and_repaint_preserve_the_public_call_contract(self) -> None:
+        adapter = make_adapter()
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        await adapter.set_led("thinking", "#123456", repaint=True)
+        leds, listening = link.leds[-1]
+        self.assertEqual((leds[0]["r"], leds[0]["g"], leds[0]["b"]), (18, 52, 86))
+        self.assertFalse(listening)
+
+    async def test_wake_and_listening_keep_semantic_colors_despite_overrides(self) -> None:
+        adapter = make_adapter()
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        for effect, rgb in (("wake", (120, 120, 120)), ("listening", (0, 160, 80))):
+            with self.subTest(effect=effect):
+                await adapter.set_led(effect, "#123456")
+                leds, listening = link.leds[-1]
+                self.assertEqual((leds[0]["r"], leds[0]["g"], leds[0]["b"]), rgb)
+                self.assertIs(listening, effect == "listening")
+
+    async def test_other_states_cannot_override_to_the_reserved_listening_green(self) -> None:
+        adapter = make_adapter()
+        link: FakeLink = adapter._link  # type: ignore[assignment]
+        for effect in ("thinking", "speaking", "music", "music_paused", "muted", "off", "nonsense"):
+            with self.subTest(effect=effect):
+                await adapter.set_led(effect, "#00a050")
+                leds, listening = link.leds[-1]
+                self.assertEqual(
+                    (leds[0]["r"], leds[0]["g"], leds[0]["b"]),
+                    adapter_module.LED_COLORS.get(effect, (0, 0, 0)),
+                )
+                self.assertFalse(listening)
 
     async def test_unknown_state_goes_dark(self) -> None:
         adapter = make_adapter()

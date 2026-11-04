@@ -72,13 +72,13 @@ def _rechunk(pcm: bytes, channels: int, frame_ms: int) -> list[bytes]:
     return [pcm[i : i + step] for i in range(0, len(pcm), step)]
 
 
-#: The Dot 2 ring is 12 LEDs (id 0..11). Values are 0-255 per channel and
-#: deliberately modest: the ring exists for feedback, not for lighting a room.
+#: The Dot 2 ring is 12 LEDs (id 0..11). Listening alone uses canonical #00A050;
+#: wake acknowledges receipt in white before the core actually opens its gate.
 LED_COLORS: dict[str, tuple[int, int, int]] = {
     "off": (0, 0, 0),
     "idle": (0, 0, 0),
-    "listening": (0, 150, 70),
-    "wake": (0, 150, 70),
+    "listening": (0, 160, 80),
+    "wake": (120, 120, 120),
     "thinking": (0, 40, 160),
     "speaking": (0, 110, 150),
     "error": (170, 0, 0),
@@ -1104,14 +1104,17 @@ class Dot2Adapter(DeviceAdapter):
         if self._link is None:
             return
         rgb = LED_COLORS.get(effect, (0, 0, 0))
-        if color:
+        if color and effect not in ("wake", "listening"):
             raw = color.lstrip("#")
             if len(raw) == 6:
                 try:
                     rgb = (int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16))
                 except ValueError:
                     pass
-        await self._link.set_leds(_ring(rgb), listening=effect in ("listening", "wake"))
+        if effect != "listening" and rgb == LED_COLORS["listening"]:
+            # A configured override must not impersonate an open receive gate.
+            rgb = LED_COLORS.get(effect, (0, 0, 0))
+        await self._link.set_leds(_ring(rgb), listening=effect == "listening")
 
 
 #: Production defaults mirroring plug.json. They are used when the legacy JSON
