@@ -299,6 +299,50 @@ class HealthFreshnessTest(unittest.IsolatedAsyncioTestCase):
         link.connected.clear()
         self.assertFalse(adapter.health()["connected"])
 
+    def test_current_physical_mute_preserves_connection_without_hiding_audio_age(self) -> None:
+        adapter = self._adapter()
+        link = adapter._link
+        link.stats.last_mic_at = 100.0
+        link.muted = True
+        link.muted_known = True
+        link.control_plane_up = True
+        link._mute_reported_on_control = True
+
+        with mock.patch.object(adapter_module.time, "monotonic", return_value=200.0):
+            health = adapter.health()
+        self.assertTrue(health["connected"])
+        self.assertTrue(health["muted"])
+        self.assertFalse(health["speaker_fresh"])
+        self.assertEqual(health["data_idle_ms"], 100000.0)
+
+    def test_stale_audio_is_not_exempt_after_unmute_unknown_state_or_socket_loss(self) -> None:
+        cases = (
+            {"muted": False},
+            {"muted_known": False},
+            {"_mute_reported_on_control": False},
+            {"control_plane_up": False},
+            {"data_plane_up": False},
+            {"clear_gate": True},
+            {"data_connects": 0},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes):
+                adapter = self._adapter()
+                link = adapter._link
+                link.stats.last_mic_at = time.monotonic() - 100.0
+                link.muted = True
+                link.muted_known = True
+                link.control_plane_up = True
+                link._mute_reported_on_control = True
+                for name, value in changes.items():
+                    if name == "clear_gate":
+                        link.connected.clear()
+                    elif name == "data_connects":
+                        link.stats.data_connects = value
+                    else:
+                        setattr(link, name, value)
+                self.assertFalse(adapter.health()["connected"])
+
 
 class AdapterLinkFreshnessTest(unittest.IsolatedAsyncioTestCase):
     """P0b-C2 over a real DeviceLink: power cut flips health, reconnect restores it.
@@ -398,6 +442,53 @@ class AdapterLinkFreshnessTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(health["data_plane"], "the socket is still adopted")
             self.assertFalse(health["speaker_fresh"])
             self.assertFalse(health["connected"])
+
+    async def test_mute_and_unmute_health_follow_control_without_more_mic_frames(self) -> None:
+        ctl = await self._register()
+        data = await self._mic()
+        await self._wait_until(lambda: self.adapter.health()["connected"])
+        await ctl.send(json.dumps({"type": "mute_state", "muted": True}))
+        await self._wait_until(lambda: self.link.muted_known and self.link.muted)
+        self.link.stats.last_mic_at = time.monotonic() - 100.0
+        health = self.adapter.health()
+        self.assertTrue(health["connected"])
+        self.assertFalse(health["speaker_fresh"])
+
+        await ctl.send(json.dumps({"type": "mute_state", "muted": False}))
+        await self._wait_until(lambda: not self.link.muted)
+        self.assertFalse(self.adapter.health()["connected"])
+        await data.send(bytes([FRAME_MIC]) + (2).to_bytes(2, "big") + bytes(320))
+        await self._wait_until(lambda: self.adapter.health()["connected"])
+
+    async def test_muted_silence_cannot_hide_a_closed_data_socket(self) -> None:
+        ctl = await self._register()
+        data = await self._mic()
+        await self._wait_until(lambda: self.adapter.health()["connected"])
+        await ctl.send(json.dumps({"type": "mute_state", "muted": True}))
+        await self._wait_until(lambda: self.link.muted_known and self.link.muted)
+        self.link.stats.last_mic_at = time.monotonic() - 100.0
+        self.assertTrue(self.adapter.health()["connected"])
+        data.transport.abort()
+        await self._wait_until(lambda: not self.link.data_plane_up)
+        self.assertFalse(self.adapter.health()["connected"])
+
+    async def test_muted_silence_cannot_hide_a_closed_or_replaced_control_socket(self) -> None:
+        ctl = await self._register()
+        await self._mic()
+        await self._wait_until(lambda: self.adapter.health()["connected"])
+        await ctl.send(json.dumps({"type": "mute_state", "muted": True}))
+        await self._wait_until(lambda: self.link.muted_known and self.link.muted)
+        self.link.stats.last_mic_at = time.monotonic() - 100.0
+        self.assertTrue(self.adapter.health()["connected"])
+
+        replacement = await self._register()
+        self.assertTrue(self.link.muted, "the historical state is still remembered")
+        self.assertFalse(self.adapter.health()["connected"], "new control has not reported mute")
+        await replacement.send(json.dumps({"type": "mute_state", "muted": True}))
+        await self._wait_until(lambda: self.adapter.health()["connected"])
+        replacement.transport.abort()
+        await self._wait_until(lambda: not self.link.control_plane_up)
+        self.assertFalse(self.adapter.health()["connected"])
 
 
 class LedTest(unittest.IsolatedAsyncioTestCase):

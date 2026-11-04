@@ -500,8 +500,10 @@ class Dot2Adapter(DeviceAdapter):
         for as long as TCP does (887 s in the field). It is now a freshness
         claim: the gate is set, a data plane is actually adopted, and the last
         proof of life (a received mic frame or a written PCM frame) is younger
-        than SPEAKER_STALE_S. The bridge watchdog normally drops the link first;
-        this covers a live control socket whose data plane went quiet.
+        than SPEAKER_STALE_S. A physical mute reported on the current control
+        connection intentionally stops the mic, so adopted control/data sockets
+        remain connected without fresh audio. The bridge watchdog still owns
+        socket liveness; unknown or unmuted silence retains the stale timeout.
         """
         link = self._link
         if link is None:
@@ -513,19 +515,29 @@ class Dot2Adapter(DeviceAdapter):
         last_activity = max(last_mic, last_pcm)
         idle_s = time.monotonic() - last_activity if last_activity > 0.0 else None
         fresh = idle_s is not None and idle_s < SPEAKER_STALE_S
+        muted = bool(self._link_muted(link))
+        muted_known = self._muted_known(link)
+        # A remembered mute from an old socket is not evidence for this one.
+        # DeviceLink clears this flag when it adopts a new control connection.
+        expected_mic_silence = (
+            muted
+            and muted_known
+            and bool(getattr(link, "control_plane_up", False))
+            and bool(getattr(link, "_mute_reported_on_control", False))
+        )
         connected = (
             link.connected.is_set()
             and int(getattr(stats, "data_connects", 0)) > 0
             and data_plane
-            and fresh
+            and (fresh or expected_mic_silence)
         )
         return {
             "connected": connected,
             # task-18: the physical mute key's observed state, per device. This is
             # NOT DOT2_MUTE (a deploy-time volume cap): the key works without a
             # restart, and this field is how rui's /health sees it.
-            "muted": bool(self._link_muted(link)),
-            "muted_known": self._muted_known(link),
+            "muted": muted,
+            "muted_known": muted_known,
             # Diagnostics for the console/log: why the flag above is what it is.
             "data_plane": data_plane,
             "speaker_fresh": fresh,

@@ -5,6 +5,9 @@
 - Do not treat a confirmed physical mute on the current control connection as a silent-data
   failure. After unmute, allow a full watchdog window for microphone capture to resume. A mute
   reported only on a previous connection does not suppress detection of a new silent link.
+- Keep adopted control/data connections healthy during a current physical mute without hiding
+  the real audio idle time. Unmute, unknown state, and a closed or replaced socket retain the
+  normal freshness and connection checks.
 
 ## [1.3.6] - 2026-11-02
 
