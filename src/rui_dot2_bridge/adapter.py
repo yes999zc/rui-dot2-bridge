@@ -579,7 +579,12 @@ class Dot2Adapter(DeviceAdapter):
             "rtt_ms": link.stats.rtt_ms,
             "mic_frames": link.stats.mic_frames,
             "dropped_audio": link.stats.dropped_audio,
-            "volume_level": link.volume_level,
+            "volume_level": getattr(link, "reported_level", None),
+            "device_volume_level": getattr(link, "reported_level", None),
+            "device_playback_stats": (
+                link.device_playback_telemetry()
+                if hasattr(link, "device_playback_telemetry") else None
+            ),
             "volume_cap_percent": link.volume_cap_percent,
             "device_managed_volume": self.device_managed_volume,
             "plug_id": self.plug_id,
@@ -600,11 +605,7 @@ class Dot2Adapter(DeviceAdapter):
                 "events": link.stats.wake_events,
                 "invalid": link.stats.invalid_wakes,
             },
-            "loudness": {
-                "enabled": self._loudness.config.enabled,
-                "mode": self._loudness.config.mode,
-                "curve": self._loudness.curve_name,
-            },
+            "loudness": {**self._loudness.describe(), "selection_basis": "last_processed_chunk"},
         }
 
     def _link_muted(self, link: object) -> bool:

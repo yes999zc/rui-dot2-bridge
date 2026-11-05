@@ -171,6 +171,8 @@ class LinkStats:
     # Last /data frame actually written to the device (monotonic). Together with
     # last_mic_at this is the adapter's proof that the data plane is alive.
     last_pcm_sent_at: float = 0.0
+    device_playback_stats: dict[str, int] | None = None
+    device_playback_report_at: float = 0.0
     half_open_drops: int = 0
     # Data-plane-only silence watchdog (1.3.6): one trip = "/data had received
     # nothing for DATA_SILENCE_TIMEOUT_S while /control still answered, so the
@@ -487,6 +489,8 @@ class DeviceLink:
         self._listen_state = ""
         self._scoring_evidence = False
         self._reported_level = None
+        self.stats.device_playback_stats = None
+        self.stats.device_playback_report_at = 0.0
         # No probe loop may outlive the plane it probed (unless it is the caller,
         # e.g. a ping that lost its own socket).
         task = self._ping_task
@@ -748,6 +752,8 @@ class DeviceLink:
         self._listen_state = ""
         self._scoring_evidence = False
         self._reported_level = None
+        self.stats.device_playback_stats = None
+        self.stats.device_playback_report_at = 0.0
         self._mute_reported_on_control = False
         self._last_reported_aec_ref = None
         # Pongs for pings the old socket never answered must not be counted as
@@ -1066,6 +1072,19 @@ class DeviceLink:
         kind = message.get("type")
         if kind == "pong":
             self._on_pong(message)
+        elif kind == "playback_stats":
+            # Reports identify a completed stream, not a particular voice turn.
+            payload = message.get("stats")
+            payload = payload if isinstance(payload, dict) else {}
+            values = {}
+            for key in ("periods", "underruns", "minDepth", "primeWaitMs",
+                        "recvSpanMs", "maxGapMs", "bytesRecv"):
+                value = payload.get(key, message.get(key))
+                if type(value) is int and 0 <= value <= 10**12:
+                    values[key] = value
+            if values:
+                self.stats.device_playback_stats = values
+                self.stats.device_playback_report_at = time.monotonic()
         elif kind == "volume_state":
             level = int(message.get("level") or 0)
             self._reported_level = level
@@ -1554,6 +1573,18 @@ class DeviceLink:
     def reported_level(self) -> int | None:
         """The device's own last report (may lag the target by one message)."""
         return self._reported_level
+
+    def device_playback_telemetry(self) -> dict[str, Any] | None:
+        values = self.stats.device_playback_stats
+        if values is None:
+            return None
+        return {
+            **values,
+            "report_age_ms": round(max(0.0, time.monotonic()
+                                       - self.stats.device_playback_report_at) * 1000, 1),
+            "turn_correlated": False,
+            "scope": "last_completed_device_stream",
+        }
 
     async def set_leds(self, leds: list[dict[str, Any]], listening: bool = False) -> None:
         try:
