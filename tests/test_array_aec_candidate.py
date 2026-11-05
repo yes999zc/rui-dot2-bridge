@@ -733,3 +733,67 @@ async def test_sparse_unverified_pcm_and_muted_pause_do_not_consume_retry(monkey
                 assert link.audio_path_failures == 1
     finally:
         await link.stop()
+
+
+@run_async
+async def test_uplink_diagnostics_only_count_current_verified_aec_generation():
+    link = DeviceLink(tls_port=None, plain_port=0, token='fixture', array_aec_v1=True,
+                      aec_enabled=True, ref_uplink=True, push_config=True, playing=lambda: True)
+    await link.start()
+    port, headers = link.bound_ports['plain'], {'X-EM-Token': 'fixture'}
+    try:
+        async with ws_client.connect(f'ws://127.0.0.1:{port}/control', additional_headers=headers) as ctl:
+            await ctl.send(json.dumps({'type': 'register', 'capabilities': ['ref_uplink', 'array_aec_v1']}))
+            msgs = [json.loads(await asyncio.wait_for(ctl.recv(), 1)) for _ in range(4)]
+            epoch = msgs[2]['audioPathEpoch']
+            await ctl.send(json.dumps({'type': 'mute_state', 'muted': False}))
+            await ctl.send(json.dumps({'type': 'listen_state', 'state': 'stream'}))
+            async with ws_client.connect(f'ws://127.0.0.1:{port}/data', additional_headers=headers) as data:
+                pcm = bytes([1, 0, 1]) + bytes(5120)
+                await data.send(pcm)
+                await asyncio.sleep(.03)
+                assert not link.audio_path_ready and link.audio.empty()
+                assert link.mic_uplink_status() == {'state': 'unknown', 'mic_age_ms': None}
+                status = {'type': 'audio_path', 'version': 1, 'epoch': epoch, 'stream_epoch': 1,
+                          'profile': 'array_aec_v1', 'aec_owner': 'device', 'aec_enabled': True,
+                          'fusion': 'seven_mic_crossover', 'channels': 2, 'mic_channels': 1,
+                          'ref_channels': 1, 'sample_rate': 16000, 'format': 's16le', 'tail_ms': 256,
+                          'reference': 'unknown', 'aec_state': 'bypass'}
+                await ctl.send(json.dumps(status))
+                await data.send(json.dumps({'type': 'audio_path_bind', 'version': 1,
+                                            'epoch': epoch, 'stream_epoch': 1}))
+                for _ in range(100):
+                    if link.audio_path_ready:
+                        break
+                    await asyncio.sleep(.01)
+                assert link.audio_path_ready
+                assert link.mic_uplink_status() == {'state': 'waiting_first_frame', 'mic_age_ms': None}
+                await data.send(pcm)
+                assert len(await asyncio.wait_for(link.audio.get(), 1)) == 5120
+                assert link.mic_uplink_status()['state'] == 'recent_mic_frame'
+                await ctl.send(json.dumps({**status, 'aec_state': 'stopped'}))
+                for _ in range(100):
+                    if not link.audio_path_ready:
+                        break
+                    await asyncio.sleep(.01)
+                assert link.mic_uplink_status() == {'state': 'unknown', 'mic_age_ms': None}
+                await ctl.send(json.dumps({**status, 'stream_epoch': 2}))
+                await data.send(json.dumps({'type': 'audio_path_bind', 'version': 1,
+                                            'epoch': epoch, 'stream_epoch': 2}))
+                for _ in range(100):
+                    if link.audio_path_ready:
+                        break
+                    await asyncio.sleep(.01)
+                assert link.audio_path_ready
+                assert link.mic_uplink_status() == {'state': 'waiting_first_frame', 'mic_age_ms': None}
+                link.audio_path_blocked = True
+                await data.send(pcm)
+                await asyncio.sleep(.03)
+                assert link.mic_uplink_status() == {'state': 'unknown', 'mic_age_ms': None}
+                assert link.audio.empty()
+                assert await link.send_pcm(bytes(4096))
+                assert (await asyncio.wait_for(data.recv(), 1))[0] == 2
+                link._enforce_data_silence()
+                assert link.data_plane_up and link.control_plane_up
+    finally:
+        await link.stop()

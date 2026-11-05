@@ -1425,6 +1425,105 @@ class DataSilenceWatchdogTest(unittest.IsolatedAsyncioTestCase):
         control.transport.abort()
         data.transport.abort()
 
+    async def test_playback_mic_stall_visibility_tracks_current_data_connection(self) -> None:
+        """A live speaker never proves that the current microphone still streams."""
+        state = {"playing": True}
+        self.link.playing = lambda: state["playing"]
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 0.05),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.2),
+        ):
+            control = await self._register_control()
+            data = await self._open_data()
+            self.assertEqual(self.link.mic_uplink_status()["state"], "unknown")
+            await control.send(json.dumps({"type": "mute_state", "muted": False}))
+            await control.send(json.dumps({"type": "listen_state", "state": "stream"}))
+            await self._wait_until(lambda: self.link._listen_state == "stream")
+            self.assertEqual(self.link.mic_uplink_status()["state"], "waiting_first_frame")
+            await data.send(bytes([FRAME_MIC, 0, 1]) + bytes(2560))
+            await self._wait_until(lambda: self.link.mic_uplink_status()["state"] == "recent_mic_frame")
+            with self.assertLogs("rui_dot2_bridge.device_link", level="WARNING") as captured:
+                await self._answer_pings_for(control, 0.7)
+            self.assertEqual(sum("microphone uplink stalled" in line for line in captured.output), 1)
+            self.assertTrue(await self.link.send_pcm(bytes(4096)))
+            self.assertEqual((await asyncio.wait_for(data.recv(), 1))[0], FRAME_SPEAKER)
+            # A malformed partial sample and successful playback are not mic proof.
+            await data.send(bytes([FRAME_MIC, 0, 2, 0]))
+            await asyncio.sleep(0.03)
+            self.assertEqual(self.link.mic_uplink_status()["state"], "format_unknown")
+            # A new valid frame is required to establish the format again.
+            await data.send(bytes([FRAME_MIC, 0, 3]) + bytes(2560))
+            await self._wait_until(lambda: self.link.mic_uplink_status()["state"] == "recent_mic_frame")
+            await self._answer_pings_for(control, 0.4)
+            self.assertEqual(self.link.mic_uplink_status()["state"], "stalled_during_playback")
+            from rui_dot2_bridge.adapter import Dot2Adapter
+            adapter = Dot2Adapter("dot2", host="127.0.0.1", token="fixture")
+            adapter._link = self.link
+            self.assertEqual(adapter.health()["mic_uplink"]["state"], "stalled_during_playback")
+            self.assertEqual(self.link.stats.data_silence_trips, 0)
+            self.assertIsNotNone(self.link._data)
+            control_meter = self.link._meters[id(self.link._control)]
+            current_rx = control_meter.last_rx_at
+            control_meter.last_rx_at = time.monotonic() - 1
+            self.assertEqual(self.link.mic_uplink_status()["state"], "unknown")
+            control_meter.last_rx_at = current_rx
+            await data.send(bytes([FRAME_MIC, 0, 3]) + bytes(2560))
+            await self._wait_until(lambda: self.link.mic_uplink_status()["state"] == "recent_mic_frame")
+            await control.send(json.dumps({"type": "mute_state", "muted": True}))
+            await self._wait_until(lambda: self.link.muted)
+            self.assertEqual(self.link.mic_uplink_status()["state"], "muted")
+            await control.send(json.dumps({"type": "mute_state", "muted": False}))
+            await control.send(json.dumps({"type": "listen_state", "state": "local"}))
+            await self._wait_until(lambda: self.link._listen_state == "local")
+            self.assertEqual(self.link.mic_uplink_status()["state"], "local")
+            await control.send(json.dumps({"type": "listen_state", "state": "degraded"}))
+            await self._wait_until(lambda: self.link._listen_state == "degraded")
+            self.assertEqual(self.link.mic_uplink_status()["state"], "degraded")
+            await control.send(json.dumps({"type": "listen_state", "state": "stream"}))
+            await self._wait_until(lambda: self.link._listen_state == "stream")
+            replacement = await self._open_data()
+            self.assertEqual(self.link.mic_uplink_status()["state"], "waiting_first_frame")
+            self.assertIsNone(self.link.mic_uplink_status()["mic_age_ms"])
+            state["playing"] = False
+            await self._answer_pings_for(control, 0.1)
+            self.assertNotEqual(self.link.mic_uplink_status()["state"], "stalled_during_playback")
+            replacement.transport.abort()
+        control.transport.abort()
+        data.transport.abort()
+
+    async def test_ref_uplink_rejects_ambiguous_mono_as_verified_capture(self) -> None:
+        """An untagged 2560-byte frame is not evidence for the stereo contract."""
+        self.link.ref_uplink = True
+        self.link.playing = lambda: True
+        with (
+            mock.patch.object(device_link_module, "PING_INTERVAL_S", 0.05),
+            mock.patch.object(device_link_module, "HALF_OPEN_TIMEOUT_S", 0.2),
+        ):
+            control = await self._register_control()
+            data = await self._open_data()
+            await control.send(json.dumps({"type": "mute_state", "muted": False}))
+            await control.send(json.dumps({"type": "listen_state", "state": "stream"}))
+            await self._wait_until(lambda: self.link._listen_state == "stream")
+            for incomplete in (bytes([FRAME_MIC]), bytes([FRAME_MIC, 0])):
+                await data.send(incomplete)
+                await self._wait_until(lambda: self.link.mic_uplink_status()["state"] == "format_unknown")
+                await self._answer_pings_for(control, 0.35)
+                self.assertEqual(self.link.mic_uplink_status()["state"], "format_unknown")
+                await data.send(bytes([FRAME_MIC, 0, 9]) + bytes(5120))
+                await self._wait_until(lambda: self.link.mic_uplink_status()["state"] == "recent_mic_frame")
+            await data.send(bytes([FRAME_MIC, 0, 1]) + bytes(2560))
+            await self._wait_until(lambda: self.link.mic_uplink_status()["state"] == "format_unknown")
+            await self._answer_pings_for(control, 0.5)
+            self.assertEqual(self.link.mic_uplink_status()["state"], "format_unknown")
+            self.assertGreater(self.link.mic_uplink_status()["mic_age_ms"], 300)
+            self.assertEqual(self.link.stats.data_silence_trips, 0)
+            await data.send(bytes([FRAME_MIC, 0, 2]) + bytes(5120))
+            await self._wait_until(lambda: self.link.mic_uplink_status()["state"] == "recent_mic_frame")
+            await data.send(bytes([FRAME_MIC, 0, 3]) + bytes(320))
+            await self._wait_until(lambda: self.link.mic_uplink_status()["state"] == "format_unknown")
+        control.transport.abort()
+        data.transport.abort()
+
     async def test_muted_device_does_not_trigger_silence_reconnect(self) -> None:
         """Physical mute intentionally stops uplink; unmute gets a fresh grace period."""
         with (
