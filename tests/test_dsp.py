@@ -189,8 +189,9 @@ class ProcessorTest(unittest.TestCase):
         self.assertLess(low_gain, -3.0)
         self.assertLess(high_gain, -1.0)
 
-    def test_missing_curves_fall_back_to_flat(self) -> None:
-        proc = LoudnessProcessor(LoudnessConfig(mode="stock", lowcut_db=0.0, highshelf_db=0.0, trim_db=0.0),
+    def test_missing_vendor_curves_fall_back_to_flat_in_raw_mode(self) -> None:
+        proc = LoudnessProcessor(LoudnessConfig(mode="stock", ladder_correct=False,
+                                               lowcut_db=0.0, highshelf_db=0.0, trim_db=0.0),
                                  Path(self.dir) / "nope")
         x = tone(0.05, amp=0.1)
         out = np.frombuffer(proc.process_bytes(pcm(x)), dtype="<i2") / 32768.0
@@ -325,6 +326,30 @@ class CorrectedLadderTest(unittest.TestCase):
         high = [float(np.interp(4000.0, self.FREQS, relative[name])) for name in names]
         self.assertEqual(low, sorted(low, reverse=True), f"100 Hz not falling with tier: {low}")
         self.assertEqual(high, sorted(high), f"4 kHz not rising with tier: {high}")
+
+    def test_corrected_ladder_without_vendor_files_matches_existing_output(self) -> None:
+        reference = self.processor()
+        generated = LoudnessProcessor(reference.config, self.dir / "missing")
+        self.assertEqual(generated.curves, {})
+        # Missing deployment assets must preserve the existing six-tier sound,
+        # including limiter protection, rather than silently becoming flat.
+        signal = pcm(tone(0.1, freq=1000.0, amp=0.7))
+        for level, name in zip(self.TIER_LEVELS, CURVES, strict=True):
+            with self.subTest(tier=name):
+                self.assertEqual(generated.set_level(level), name)
+                reference.set_level(level)
+                generated.reset_stream()
+                reference.reset_stream()
+                output = generated.process_bytes(signal)
+                self.assertEqual(output, reference.process_bytes(signal))
+                peak = np.max(np.abs(np.frombuffer(output, dtype="<i2").astype(float))) / 32768
+                self.assertLessEqual(peak, 10 ** (-1 / 20))
+
+        generated.update({"ladder_correct": False})
+        self.assertEqual(generated.curve_name, "")
+        self.assertIsNone(generated._fir)
+        generated.update({"ladder_correct": True, "curve_ladder": False})
+        self.assertEqual(generated.set_level(50), "EQ_100")
 
     def measure_at(self, db: np.ndarray) -> tuple[float, float]:
         bass = band_mean_db(db, self.FREQS, 100, 300) - band_mean_db(db, self.FREQS, 1000, 3000)

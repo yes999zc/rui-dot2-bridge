@@ -1021,6 +1021,8 @@ class DeviceLink:
             await self._send_control(
                 {
                     "type": "config",
+                    **({"deviceManagedVolume": True}
+                       if self.device_managed_volume else {}),
                     **({"startupVolume": self._volume_level}
                        if not self.device_managed_volume else {}),
                     **({"owwOnDevice": self.oww_on_device}

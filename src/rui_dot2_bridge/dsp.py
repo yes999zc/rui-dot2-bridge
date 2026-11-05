@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections.abc import Collection
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -171,15 +172,19 @@ def load_curves(directory: Path) -> dict[str, np.ndarray]:
     return curves
 
 
-def curve_for_level(curves: dict[str, np.ndarray], level: int, ladder: bool = True) -> tuple[str, np.ndarray]:
+def curve_name_for_level(curves: Collection[str], level: int, ladder: bool = True) -> str:
+    """Select a tier independently of where its FIR coefficients come from."""
     if not ladder:
-        name = "EQ_100" if "EQ_100" in curves else sorted(curves)[-1]
-        return name, curves[name]
+        return "EQ_100" if "EQ_100" in curves else sorted(curves)[-1]
     percent = max(0, min(127, int(level))) * 100.0 / 127.0
     for boundary, name in BOUNDARIES:
         if percent <= boundary and name in curves:
-            return name, curves[name]
-    name = "EQ_100" if "EQ_100" in curves else sorted(curves)[-1]
+            return name
+    return "EQ_100" if "EQ_100" in curves else sorted(curves)[-1]
+
+
+def curve_for_level(curves: dict[str, np.ndarray], level: int, ladder: bool = True) -> tuple[str, np.ndarray]:
+    name = curve_name_for_level(curves, level, ladder)
     return name, curves[name]
 
 
@@ -222,9 +227,9 @@ def ladder_tone_db(freqs: np.ndarray, params: dict[str, float]) -> np.ndarray:
 def build_ladder_curve(name: str, config: LoudnessConfig, rate: int = 48000) -> np.ndarray:
     """Linear-phase FIR realising the corrected target for one tier.
 
-    The stock files are still what selects the tier (and what
-    ``ladder_correct=false`` plays), but the corrected tone is designed here so
-    the six tiers differ even when the vendor files are byte-identical.
+    The six tiers are built in; vendor files are only needed for
+    ``ladder_correct=false``. The corrected tone is designed here so it also
+    works in deployments that do not ship the vendor coefficients.
 
     Design grid vs. FIR length: the smooth target is sampled at
     ``LADDER_DESIGN_TAPS`` (5.9 Hz bins at 48 kHz) and the central
@@ -419,18 +424,23 @@ class LoudnessProcessor:
         self._limiter = Limiter(rate, config.limiter_ceiling_db,
                                 config.limiter_lookahead_ms, config.limiter_release_ms)
         self._rebuild()
-        if config.enabled and config.mode == "stock" and not self.curves:
+        if (config.enabled and config.mode == "stock"
+                and not config.ladder_correct and not self.curves):
             log.warning("loudness: mode=stock but no EQ_*.cfg found; running flat "
                         "(pull them from the device into DOT2_EQ_DIR)")
 
     # ------------------------------------------------------------ configuration
-    def _apply_curve(self, name: str, taps: np.ndarray) -> None:
+    def _stock_curve_name(self) -> str:
+        names = CURVES if self.config.ladder_correct else self.curves
+        return curve_name_for_level(names, self._level, self.config.curve_ladder)
+
+    def _apply_curve(self, name: str) -> None:
         """Install the FIR for one tier: corrected target or raw vendor taps."""
         self.curve_name = name
         if self.config.ladder_correct:
             self._fir = FirStream(build_ladder_curve(name, self.config, self.rate))
         else:
-            self._fir = FirStream(taps)
+            self._fir = FirStream(self.curves[name])
 
     def _rebuild(self) -> None:
         cfg = self.config
@@ -441,9 +451,8 @@ class LoudnessProcessor:
             self._biquads = []
             return
         if cfg.mode == "stock":
-            if self.curves:
-                name, taps = curve_for_level(self.curves, self._level, cfg.curve_ladder)
-                self._apply_curve(name, taps)
+            if cfg.ladder_correct or self.curves:
+                self._apply_curve(self._stock_curve_name())
             else:
                 # Flat fallback: describe() must not keep reporting the tier
                 # that was active before the curves went missing.
@@ -478,11 +487,13 @@ class LoudnessProcessor:
         rebuilt only when the tier changes (not on every chunk within a tier).
         """
         self._level = max(0, min(127, int(level)))
-        if self.config.mode != "stock" or not self.curves or not self.config.curve_ladder:
+        if (not self.config.enabled or self.config.mode != "stock"
+                or not (self.config.ladder_correct or self.curves)
+                or not self.config.curve_ladder):
             return self.curve_name
-        name, taps = curve_for_level(self.curves, self._level, True)
+        name = self._stock_curve_name()
         if name != self.curve_name or self._fir is None:
-            self._apply_curve(name, taps)
+            self._apply_curve(name)
         return name
 
     def reset_stream(self) -> None:

@@ -946,7 +946,8 @@ class Dot2Adapter(DeviceAdapter):
             self._stream_bytes = 0
         self._stream_bytes += len(pcm)
         # Stock EQ curve follows the device's current level; then EQ + limiter.
-        self._loudness.set_level(self._link.volume_level)
+        level = getattr(self._link, "reported_level", None)
+        self._loudness.set_level(self._link.volume_level if level is None else level)
         pcm = self._loudness.process_bytes(pcm)
         if self._dump_dir:
             now = time.monotonic()

@@ -217,6 +217,7 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
             messages = [json.loads(await asyncio.wait_for(ctl.recv(), 2)) for _ in range(3)]
             self.assertEqual([msg["type"] for msg in messages], ["ack", "config", "mic_start"])
             self.assertNotIn("startupVolume", messages[1])
+            self.assertIs(messages[1]["deviceManagedVolume"], True)
             await self.link.set_volume_percent(20)
             self.assertEqual(json.loads(await asyncio.wait_for(ctl.recv(), 2))["level"],
                              capped_level(20, 100))

@@ -153,6 +153,14 @@ class PlaybackTest(unittest.IsolatedAsyncioTestCase):
         await self.adapter.play(bytes(4000), sample_rate=48000, channels=1)
         self.assertEqual([len(b) for b in self.link.sent], [SPEAKER_CHUNK_BYTES] * 2)
 
+    async def test_playback_loudness_follows_reported_volume_then_falls_back_to_target(self) -> None:
+        self.link.volume_level = 127
+        for reported, expected in ((80, "EQ_70"), (0, "EQ_50"), (None, "EQ_100")):
+            with self.subTest(reported=reported):
+                self.link.reported_level = reported
+                await self.adapter.play(bytes(100), sample_rate=48000, channels=1)
+                self.assertEqual(self.adapter._loudness.curve_name, expected)
+
     async def test_rejects_wrong_rate_or_channels(self) -> None:
         with self.assertRaises(ValueError):
             await self.adapter.play(bytes(100), sample_rate=16000, channels=1)
