@@ -1509,11 +1509,12 @@ class DeviceLink:
         finally:
             self._inflight_bytes = max(0, self._inflight_bytes - total)
 
-    async def end_stream(self) -> None:
+    async def end_stream(self) -> bool:
+        """Report whether EOS was written to the current data connection."""
         conn = self._data
         if conn is None:
-            return
-        await self._write_data_frame(conn, speaker_eos())
+            return False
+        return await self._write_data_frame(conn, speaker_eos())
 
     async def flush(self) -> None:
         """Discard buffered playback, then wait until the device has seen it.

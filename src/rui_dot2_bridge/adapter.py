@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import time
 import wave
@@ -243,6 +244,14 @@ class Dot2Adapter(DeviceAdapter):
         self.channels = self.mic_channels + self.ref_channels
         self._seq = 0
         self._frame_buffer = bytearray()
+        # A stream boundary (tail + EOS) and a new PCM burst must be atomic
+        # relative to each other; DeviceLink only serializes individual frames.
+        self._playback_lock = asyncio.Lock()
+        # Delivery receipts are optional: legacy callers retain their old API.
+        # Records belong to a turn, not to a connection or individual PCM block.
+        self._delivery_serial = 0
+        self._delivery_current: int | None = None
+        self._delivery_scopes: dict[int, dict[str, Any]] = {}
         self._eos_task: asyncio.Task[None] | None = None
         self._playing = False
         # Device-side AEC/DSP knobs (None = firmware default).
@@ -805,6 +814,8 @@ class Dot2Adapter(DeviceAdapter):
         )
 
     async def close(self) -> None:
+        if self._delivery_current is not None:
+            self.cancel_delivery(self._delivery_current)
         if self._uplink_dump_handle is not None:
             self._uplink_dump_handle.close()
             self._uplink_dump_handle = None
@@ -828,10 +839,125 @@ class Dot2Adapter(DeviceAdapter):
         self._wakes.clear()
         self._closed = True
 
+    def begin_delivery(self) -> int:
+        """Start one transport receipt scope after the caller has stopped old audio."""
+        if self._delivery_current is not None:
+            self.cancel_delivery(self._delivery_current)
+        self._delivery_serial += 1
+        token = self._delivery_serial
+        self._delivery_scopes[token] = {
+            "status": "pending", "event": asyncio.Event(), "finishing": False,
+            "has_pcm": False, "stream_open": False, "stream_version": 0,
+            "active_drains": 0, "pcm_attempted": False, "pcm_accepted": False,
+        }
+        self._delivery_current = token
+        while len(self._delivery_scopes) > 32:
+            del self._delivery_scopes[next(iter(self._delivery_scopes))]
+        return token
+
+    def _delivery_complete(self, token: int | None, status: str) -> None:
+        scope = self._delivery_scopes.get(token)
+        if scope is None or scope["status"] != "pending":
+            return
+        if status in {"failed", "cancelled", "timeout"}:
+            if scope["pcm_accepted"]:
+                status = "partial"
+            elif scope["pcm_attempted"]:
+                status = "unknown"
+            elif status == "failed":
+                status = "not_sent"
+        scope["status"] = status
+        scope["event"].set()
+
+    def cancel_delivery(self, token: int) -> None:
+        self._delivery_complete(token, "cancelled")
+        if self._delivery_current == token:
+            # Keep the terminal token as a barrier until the next begin: late
+            # chunks from this turn must not fall through the legacy path.
+            self._reset_stream_state()
+
+    async def finish_delivery(self, token: int, *, timeout_s: float) -> str:
+        """Finish the submitted turn through EOS; this does not prove playback.
+
+        The caller must submit all PCM before calling. A deadline or interrupted
+        write after possible PCM transmission is reported as unknown/partial.
+        """
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise ValueError("delivery timeout must be finite and positive")
+        timeout_s = min(timeout_s, 30.0)
+        scope = self._delivery_scopes.get(token)
+        if scope is None:
+            # An evicted or unknown token has no retained delivery evidence.
+            return "unknown"
+        scope["finishing"] = True
+        try:
+            async with asyncio.timeout(timeout_s):
+                async with self._playback_lock:
+                    if scope["status"] == "pending" and token == self._delivery_current:
+                        if not scope["has_pcm"]:
+                            self._delivery_complete(token, "not_sent")
+                        else:
+                            for name in ("_prebuffer_task", "_eos_task"):
+                                task = getattr(self, name)
+                                if task is not None and task is not asyncio.current_task():
+                                    task.cancel()
+                                setattr(self, name, None)
+                            if scope["stream_open"] and self._playing:
+                                if not self._stream_started:
+                                    self._stream_started = True
+                                    if not await self._drain_frames(token):
+                                        self._delivery_complete(token, "failed")
+                                        if token == self._delivery_current:
+                                            self._reset_stream_state()
+                                if (token == self._delivery_current and scope["status"] == "pending"):
+                                    await self._finish_idle_stream(token)
+                            elif scope["has_pcm"] and not scope["stream_open"]:
+                                self._delivery_complete(token, "sent")
+                await scope["event"].wait()
+        except TimeoutError:
+            self._delivery_complete(token, "timeout")
+            if token == self._delivery_current:
+                self._reset_stream_state()
+        except asyncio.CancelledError:
+            self.cancel_delivery(token)
+            raise
+        return scope["status"]
+
+    async def _delivery_write(self, token: int | None, operation, *, pcm=False) -> bool:
+        scope = self._delivery_scopes.get(token)
+        if pcm and scope is not None:
+            scope["pcm_attempted"] = True
+        try:
+            result = await operation
+        except BaseException:
+            # Cancellation during a socket write is also an uncertain delivery.
+            self._delivery_complete(token, "failed")
+            raise
+        if result is False:
+            self._delivery_complete(token, "failed")
+            return False
+        if pcm and scope is not None:
+            scope["pcm_accepted"] = True
+        return True
+
+    def _delivery_stream_end(self, token: int | None, version: int) -> None:
+        scope = self._delivery_scopes.get(token)
+        if (scope is None or scope["status"] != "pending"
+                or scope["stream_version"] != version):
+            return
+        if scope["active_drains"]:
+            # EOS racing an unfinished PCM drain cannot prove wire ordering.
+            self._delivery_complete(token, "failed")
+            return
+        scope["stream_open"] = False
+        if scope["finishing"] and scope["has_pcm"]:
+            self._delivery_complete(token, "sent")
+
     def _on_link_lost(self, reason: str) -> None:
         """Drop the in-flight half sentence; called by DeviceLink (sync)."""
         if self._playing or self._frame_buffer or self._stream_started:
             log.warning("dot2 adapter: link lost (%s); dropping buffered playback", reason)
+            self._delivery_complete(self._delivery_current, "failed")
         self._reset_stream_state()
 
     def _reset_stream_state(self) -> None:
@@ -930,6 +1056,23 @@ class Dot2Adapter(DeviceAdapter):
         return bytes(out)
 
     async def play(self, pcm: bytes, *, sample_rate: int, channels: int) -> None:
+        """Legacy playback; an unscoped new stream supersedes any scoped reply."""
+        async with self._playback_lock:
+            if self._delivery_current is not None:
+                self.cancel_delivery(self._delivery_current)
+                self._delivery_current = None
+            await self._play(pcm, sample_rate=sample_rate, channels=channels, delivery=None)
+
+    async def play_delivery(self, token: int, pcm: bytes, *, sample_rate: int,
+                            channels: int) -> None:
+        """Queue one block only if it belongs to the current live delivery."""
+        async with self._playback_lock:
+            if token != self._delivery_current or token not in self._delivery_scopes:
+                return
+            await self._play(pcm, sample_rate=sample_rate, channels=channels, delivery=token)
+
+    async def _play(self, pcm: bytes, *, sample_rate: int, channels: int,
+                    delivery: int | None) -> None:
         """Queue mono PCM. rui has already resampled it to ``playback.rate``."""
         if channels != 1:
             raise ValueError("the Dot 2 plays mono frames; mix down before play()")
@@ -940,6 +1083,16 @@ class Dot2Adapter(DeviceAdapter):
             )
         if self._link is None:
             raise RuntimeError("dot2 adapter is not open")
+        scope = self._delivery_scopes.get(delivery)
+        if scope is not None:
+            # A failed, finished or cancelled turn cannot leak later blocks into
+            # the connection. The next authorized turn starts a fresh token.
+            if scope["status"] != "pending" or scope["finishing"]:
+                return
+            scope["has_pcm"] = scope["has_pcm"] or bool(pcm)
+            if not self._playing:
+                scope["stream_version"] += 1
+            scope["stream_open"] = True
         # Fresh stream: drop the previous stream's FIR/limiter state, otherwise its
         # tail is mixed into the first milliseconds of this one (a click after "在呢").
         if not self._playing:
@@ -967,29 +1120,35 @@ class Dot2Adapter(DeviceAdapter):
             else:
                 if self._prebuffer_task is None or self._prebuffer_task.done():
                     self._prebuffer_task = asyncio.create_task(
-                        self._start_after_prebuffer(), name="dot2-prebuffer")
+                        self._start_after_prebuffer(delivery), name="dot2-prebuffer")
                 self._playing = True
                 self._schedule_eos()
                 return
-        if not await self._drain_frames():
-            # The data plane vanished under us; send_pcm dropped the chunks and
-            # reset the stream, so do not schedule an EOS for a dead link.
-            self._reset_stream_state()
+        if not await self._drain_frames(delivery):
+            self._delivery_complete(delivery, "failed")
+            if delivery == self._delivery_current:
+                self._reset_stream_state()
+            return
+        if (delivery != self._delivery_current
+                or scope is not None and scope["status"] != "pending"):
             return
         self._playing = True
         self._schedule_eos()
 
-    async def _start_after_prebuffer(self) -> None:
+    async def _start_after_prebuffer(self, delivery: int | None) -> None:
         """Short replies may never fill the prebuffer: start after a short wait."""
         try:
             await asyncio.sleep(self._prebuffer_start_s)
         except asyncio.CancelledError:
             return
-        if self._stream_started or not self._frame_buffer:
-            return
-        self._stream_started = True
-        if not await self._drain_frames():
-            self._reset_stream_state()
+        async with self._playback_lock:
+            if delivery != self._delivery_current or self._stream_started or not self._frame_buffer:
+                return
+            self._stream_started = True
+            if not await self._drain_frames(delivery):
+                self._delivery_complete(delivery, "failed")
+                if delivery == self._delivery_current:
+                    self._reset_stream_state()
 
     def _flush_dump(self) -> None:
         if not self._dump_dir or not self._dump_buf:
@@ -1003,16 +1162,26 @@ class Dot2Adapter(DeviceAdapter):
         finally:
             self._dump_buf.clear()
 
-    async def _drain_frames(self) -> bool:
+    async def _drain_frames(self, delivery: int | None) -> bool:
         assert self._link is not None
         if not self._stream_started:
             return True
-        while len(self._frame_buffer) >= SPEAKER_CHUNK_BYTES:
-            chunk = bytes(self._frame_buffer[:SPEAKER_CHUNK_BYTES])
-            del self._frame_buffer[:SPEAKER_CHUNK_BYTES]
-            if await self._link.send_pcm(chunk) is False:
-                return False
-        return True
+        scope = self._delivery_scopes.get(delivery)
+        if scope is not None:
+            scope["active_drains"] += 1
+        try:
+            while len(self._frame_buffer) >= SPEAKER_CHUNK_BYTES:
+                if (delivery != self._delivery_current
+                        or scope is not None and scope["status"] != "pending"):
+                    return False
+                chunk = bytes(self._frame_buffer[:SPEAKER_CHUNK_BYTES])
+                del self._frame_buffer[:SPEAKER_CHUNK_BYTES]
+                if not await self._delivery_write(delivery, self._link.send_pcm(chunk), pcm=True):
+                    return False
+            return True
+        finally:
+            if scope is not None:
+                scope["active_drains"] -= 1
 
     def _eos_delay(self) -> float:
         short_bytes = int(SPEAKER_RATE * 2 * SHORT_STREAM_S)
@@ -1021,27 +1190,31 @@ class Dot2Adapter(DeviceAdapter):
     def _schedule_eos(self) -> None:
         if self._eos_task is not None:
             self._eos_task.cancel()
-        self._eos_task = asyncio.create_task(self._eos_after_idle(), name="dot2-eos")
+        self._eos_task = asyncio.create_task(
+            self._eos_after_idle(self._delivery_current), name="dot2-eos")
 
-    async def _eos_after_idle(self) -> None:
+    async def _eos_after_idle(self, delivery: int | None) -> None:
         try:
             await asyncio.sleep(self._eos_delay())
         except asyncio.CancelledError:
             return
-        if not self._playing or self._link is None:
-            return
-        # A short stream can be shorter than the prebuffer: never end before the
-        # prebuffer has actually started it, or the whole buffer is mistaken for a
-        # tail (and later played late).
-        while self._playing and not self._stream_started and self._frame_buffer:
+        # Do not hold the lock while waiting for prebuffer: its task needs it.
+        while (delivery == self._delivery_current and self._playing
+               and not self._stream_started and self._frame_buffer):
             await asyncio.sleep(0.05)
-        if not self._playing:
+        async with self._playback_lock:
+            await self._finish_idle_stream(delivery)
+
+    async def _finish_idle_stream(self, delivery: int | None) -> None:
+        if delivery != self._delivery_current or not self._playing or self._link is None:
             return
+        scope = self._delivery_scopes.get(delivery)
+        version = scope["stream_version"] if scope is not None else 0
         self._playing = False
         self._stream_started = False
         drop_bytes = int(SPEAKER_RATE * 2 * EOS_TAIL_DROP_MS / 1000.0)
         short_stream = self._stream_bytes <= int(SPEAKER_RATE * 2 * SHORT_STREAM_S)
-        if len(self._frame_buffer) < drop_bytes and not short_stream:
+        if len(self._frame_buffer) < drop_bytes and not short_stream and delivery is None:
             # Long reply: cutting the last period is inaudible (the word is long
             # over) and beats a fragment played one idle later. A SHORT cue is the
             # opposite: the cut lands on the last syllable ("在呢" -> the click
@@ -1049,7 +1222,10 @@ class Dot2Adapter(DeviceAdapter):
             # short EOS idle keeps it close to the word (2026-10-25).
             self._frame_buffer.clear()
             self._stream_bytes = 0
-            await self._link.end_stream()
+            if not await self._delivery_write(delivery, self._link.end_stream()):
+                self._delivery_complete(delivery, "failed")
+            else:
+                self._delivery_stream_end(delivery, version)
             return
         if self._frame_buffer:
             # The tail continues the same stream (the tail is played straight after
@@ -1061,11 +1237,22 @@ class Dot2Adapter(DeviceAdapter):
             if len(tail) < SPEAKER_CHUNK_BYTES:
                 tail += bytes(SPEAKER_CHUNK_BYTES - len(tail))
             self._frame_buffer.clear()
-            if await self._link.send_pcm(tail) is False:
-                self._reset_stream_state()
+            if not await self._delivery_write(delivery, self._link.send_pcm(tail), pcm=True):
+                self._delivery_complete(delivery, "failed")
+                if delivery == self._delivery_current:
+                    self._reset_stream_state()
+                return
+            scope = self._delivery_scopes.get(delivery)
+            if (delivery != self._delivery_current or scope is not None
+                    and (scope["stream_version"] != version or scope["status"] != "pending")):
                 return
         self._stream_bytes = 0
-        await self._link.end_stream()
+        if not await self._delivery_write(delivery, self._link.end_stream()):
+            self._delivery_complete(delivery, "failed")
+            return
+        self._delivery_stream_end(delivery, version)
+        if delivery != self._delivery_current:
+            return
         self._flush_dump()
         log.debug("dot2 adapter: stream ended (idle %.0f ms)", self._eos_delay() * 1000)
 
@@ -1080,6 +1267,8 @@ class Dot2Adapter(DeviceAdapter):
         them on the late flush: 406 ms hole at the start of 11/11 replies.
         """
         active = self._playing or bool(self._frame_buffer)
+        if self._delivery_current is not None:
+            self._delivery_complete(self._delivery_current, "cancelled")
         if self._eos_task is not None:
             self._eos_task.cancel()
             self._eos_task = None
