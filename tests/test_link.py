@@ -210,6 +210,21 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.TimeoutError):
                 await asyncio.wait_for(ctl.recv(), 0.4)
 
+    async def test_device_owns_volume_on_connect_and_after_explicit_write(self) -> None:
+        self.link.device_managed_volume = True
+        self.link.volume_cap_percent = 100.0
+        async with self._control() as ctl:
+            messages = [json.loads(await asyncio.wait_for(ctl.recv(), 2)) for _ in range(3)]
+            self.assertEqual([msg["type"] for msg in messages], ["ack", "config", "mic_start"])
+            self.assertNotIn("startupVolume", messages[1])
+            await self.link.set_volume_percent(20)
+            self.assertEqual(json.loads(await asyncio.wait_for(ctl.recv(), 2))["level"],
+                             capped_level(20, 100))
+            await ctl.send(json.dumps({"type": "volume_state", "level": 120}))
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(ctl.recv(), 0.4)
+            self.assertEqual(self.link.reported_level, 120)
+
     async def test_oww_wake_is_queued_and_drained_once(self) -> None:
         async with self._control() as ctl:
             await self._handshake(ctl)

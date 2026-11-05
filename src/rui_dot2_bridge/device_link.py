@@ -242,6 +242,7 @@ class DeviceLink:
         bind_host: str = "0.0.0.0",
         device_id: str | None = None,
         volume_cap_percent: float = VOLUME_CAP_PERCENT,
+        device_managed_volume: bool = False,
         push_config: bool = True,
         aec_enabled: bool = True,
         ref_uplink: bool = False,
@@ -272,7 +273,9 @@ class DeviceLink:
         self.plain_port = plain_port
         self.bind_host = bind_host
         self.device_id = device_id
-        self.volume_cap_percent = max(0.0, min(float(volume_cap_percent), 100.0))
+        self.device_managed_volume = device_managed_volume is True
+        self.volume_cap_percent = (100.0 if self.device_managed_volume
+                                   else max(0.0, min(float(volume_cap_percent), 100.0)))
         self.push_config = push_config
         self.aec_enabled = aec_enabled
         # Advertise dot2_hw_ref so a patched firmware (v2.19.0-ea.1 + the
@@ -1011,13 +1014,15 @@ class DeviceLink:
             ",".join(self.info.capabilities),
         )
 
-        # Quiet by construction: the ceiling is applied before anything plays.
-        await self.set_volume_percent(self.volume_cap_percent)
+        if not self.device_managed_volume:
+            # Managed mode applies its ceiling before anything plays.
+            await self.set_volume_percent(self.volume_cap_percent)
         if self.push_config:
             await self._send_control(
                 {
                     "type": "config",
-                    "startupVolume": self._volume_level,
+                    **({"startupVolume": self._volume_level}
+                       if not self.device_managed_volume else {}),
                     **({"owwOnDevice": self.oww_on_device}
                        if self.oww_on_device is not None else {}),
                     # The device opens the scorer for this model; omitting it leaves
@@ -1062,7 +1067,7 @@ class DeviceLink:
         elif kind == "volume_state":
             level = int(message.get("level") or 0)
             self._reported_level = level
-            if level > self._volume_level:
+            if not self.device_managed_volume and level > self._volume_level:
                 # The ceiling wins over the physical buttons. A report BELOW the
                 # target is the device confirming an older value; it must never
                 # lower the target, only be recorded.

@@ -203,6 +203,7 @@ class Dot2Adapter(DeviceAdapter):
         token: str | None = None,
         allow_unauthenticated: bool = False,
         volume_cap_percent: float = VOLUME_CAP_PERCENT,
+        device_managed_volume: bool = False,
         push_config: bool = True,
         aec_enabled: bool = True,
         oww_on_device: str = "off",
@@ -231,7 +232,9 @@ class Dot2Adapter(DeviceAdapter):
         # The ceiling itself is NOT clamped by the default 30 %: that default is a
         # fallback, not a hard limit. This bug made DOT2_VOLUME_CAP=70 silently
         # behave as 30 and cost a morning of "the speaker is very quiet".
-        self.volume_cap_percent = max(0.0, min(float(volume_cap_percent), 100.0))
+        self.device_managed_volume = device_managed_volume is True
+        self.volume_cap_percent = (100.0 if self.device_managed_volume
+                                   else max(0.0, min(float(volume_cap_percent), 100.0)))
         # Capture layout. Stock firmware: one mono channel, no reference.
         # P3 (firmware fork) will add a trailing playback reference; the adapter
         # is already able to expose it, so the switch is config, not code.
@@ -300,6 +303,7 @@ class Dot2Adapter(DeviceAdapter):
             "plain_port": None,
             "device_id": device_id,
             "volume_cap_percent": self.volume_cap_percent,
+            "device_managed_volume": self.device_managed_volume,
             "push_config": push_config,
             "aec_enabled": aec_enabled,
             "ref_uplink": self.ref_channels > 0,
@@ -472,6 +476,8 @@ class Dot2Adapter(DeviceAdapter):
             return None
         level = getattr(self._link, "reported_level", None)
         if level is None:
+            if self.device_managed_volume:
+                return None
             level = self._link.volume_level
         return round(max(0, min(DEVICE_LEVEL_MAX, int(level))) * 255 / DEVICE_LEVEL_MAX)
 
@@ -575,6 +581,7 @@ class Dot2Adapter(DeviceAdapter):
             "dropped_audio": link.stats.dropped_audio,
             "volume_level": link.volume_level,
             "volume_cap_percent": link.volume_cap_percent,
+            "device_managed_volume": self.device_managed_volume,
             "plug_id": self.plug_id,
             # Playback mute policy: the plugin-side answer to self-hearing.
             "playback_gate_ms": round(self._playback_gate_s * 1000.0),
@@ -1364,6 +1371,7 @@ def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
         token=token,
         allow_unauthenticated=allow_unauthenticated,
         volume_cap_percent=volume_cap_percent,
+        device_managed_volume=params.get("device_managed_volume") is True and not mute,
         aec_enabled=aec_enabled,
         oww_on_device=oww_on_device,
         oww_model=oww_model,
