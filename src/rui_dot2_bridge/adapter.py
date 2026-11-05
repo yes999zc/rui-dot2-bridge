@@ -562,6 +562,8 @@ class Dot2Adapter(DeviceAdapter):
             # Keep both directions independent: recent playback must not hide
             # a stalled microphone, and intentional mute can explain its age.
             "mic_rx_age_ms": None if last_mic <= 0.0 else round((now - last_mic) * 1000.0, 1),
+            "mic_uplink": (link.mic_uplink_status() if callable(getattr(link, "mic_uplink_status", None))
+                           else {"state": "unknown", "mic_age_ms": None}),
             "playback_tx_age_ms": None if last_pcm <= 0.0 else round((now - last_pcm) * 1000.0, 1),
             "speaker_stale_s": SPEAKER_STALE_S,
             "half_open_drops": int(getattr(stats, "half_open_drops", 0)),
