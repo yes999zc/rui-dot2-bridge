@@ -547,8 +547,9 @@ class Dot2Adapter(DeviceAdapter):
         data_plane = bool(getattr(link, "data_plane_up", False))
         last_mic = float(getattr(stats, "last_mic_at", 0.0) or 0.0)
         last_pcm = float(getattr(stats, "last_pcm_sent_at", 0.0) or 0.0)
+        now = time.monotonic()
         last_activity = max(last_mic, last_pcm)
-        idle_s = time.monotonic() - last_activity if last_activity > 0.0 else None
+        idle_s = now - last_activity if last_activity > 0.0 else None
         fresh = idle_s is not None and idle_s < SPEAKER_STALE_S
         muted = bool(self._link_muted(link))
         muted_known = self._muted_known(link)
@@ -593,6 +594,11 @@ class Dot2Adapter(DeviceAdapter):
             "data_plane": data_plane,
             "speaker_fresh": fresh,
             "data_idle_ms": None if idle_s is None else round(idle_s * 1000.0, 1),
+            # Process-lifetime observations, not proof of current-socket audio.
+            # Keep both directions independent: recent playback must not hide
+            # a stalled microphone, and intentional mute can explain its age.
+            "mic_rx_age_ms": None if last_mic <= 0.0 else round((now - last_mic) * 1000.0, 1),
+            "playback_tx_age_ms": None if last_pcm <= 0.0 else round((now - last_pcm) * 1000.0, 1),
             "speaker_stale_s": SPEAKER_STALE_S,
             "half_open_drops": int(getattr(stats, "half_open_drops", 0)),
             # Data-plane-only watchdog (plug 1.3.6): how many times the link was
