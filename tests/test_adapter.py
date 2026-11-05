@@ -265,6 +265,26 @@ class HealthFreshnessTest(unittest.IsolatedAsyncioTestCase):
     are independent facts, including when the data stream is stale or absent.
     """
 
+    def test_uplink_and_downlink_ages_do_not_mask_each_other(self) -> None:
+        adapter = make_adapter()
+        link = adapter._link
+        link.stats.last_mic_at = 100.0
+        link.stats.last_pcm_sent_at = 199.9
+        with mock.patch.object(adapter_module.time, "monotonic", return_value=200.0):
+            health = adapter.health()
+        self.assertTrue(health["connected"])
+        self.assertEqual(health["mic_rx_age_ms"], 100000.0)
+        self.assertEqual(health["playback_tx_age_ms"], 100.0)
+        self.assertEqual(health["data_idle_ms"], 100.0)
+
+    def test_ages_remain_unknown_until_a_frame_is_observed(self) -> None:
+        adapter = make_adapter()
+        adapter._link.stats.last_mic_at = 0.0
+        adapter._link.stats.last_pcm_sent_at = 0.0
+        health = adapter.health()
+        self.assertIsNone(health["mic_rx_age_ms"])
+        self.assertIsNone(health["playback_tx_age_ms"])
+
     def test_control_connection_is_explicit_and_independent_of_data_freshness(self) -> None:
         adapter = make_adapter()
         link = adapter._link
