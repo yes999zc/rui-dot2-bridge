@@ -224,6 +224,9 @@ class _ConnMeter:
     # only this: a successful write proves the kernel accepted bytes, not that
     # the device read them.
     last_rx_at: float = field(default_factory=time.monotonic)
+    adopted_at: float = field(default_factory=time.monotonic)
+    last_mic_at: float = 0.0
+    last_ambiguous_mic_at: float = 0.0
     ping_task: asyncio.Task[None] | None = None
     # True once the post-mortem for this connection was already logged (a
     # refusal names its reason), so _drop_control does not say it twice.
@@ -344,6 +347,8 @@ class DeviceLink:
         # Each control connection must provide its own first report.
         self._last_reported_aec_ref: str | None = None
         self._last_unmuted_at = 0.0
+        self._last_stream_at = 0.0
+        self._reported_mic_stall = False
         # A sync callback for "the device link just went away". The adapter uses
         # it to drop its half-sentence buffer: the link has no outbound PCM queue,
         # so a reconnect must not drain bytes the previous connection never saw.
@@ -593,6 +598,39 @@ class DeviceLink:
         if data is not None:
             self._lose_data(data, reason, abort=True)
 
+    def mic_uplink_status(self) -> dict[str, object]:
+        """Current-socket observation; never infer capture from speaker writes."""
+        data, control = self._data, self._control
+        meter = self._meters.get(id(data)) if data is not None else None
+        control_meter = self._meters.get(id(control)) if control is not None else None
+        if data is None or control is None or meter is None or control_meter is None:
+            return {"state": "unknown", "mic_age_ms": None}
+        now = time.monotonic()
+        mic_age = round(max(0.0, now - meter.last_mic_at) * 1000.0, 1) if meter.last_mic_at else None
+        if now - control_meter.last_rx_at > HALF_OPEN_TIMEOUT_S:
+            state = "unknown"
+        elif self._mute_reported_on_control and self.muted_known and self.muted:
+            state = "muted"
+        elif self._listen_state in ("local", "degraded"):
+            state = self._listen_state
+        elif (not self._mute_reported_on_control or not self.muted_known
+              or self._listen_state != "stream"):
+            state = "unknown"
+        else:
+            current_since = max(meter.adopted_at, self._last_unmuted_at, self._last_stream_at)
+            has_current_frame = meter.last_mic_at >= current_since and meter.last_mic_at > 0
+            since = max(meter.last_mic_at, current_since)
+            threshold = max(float(self.data_silence_timeout_s), HALF_OPEN_TIMEOUT_S)
+            if meter.last_ambiguous_mic_at >= current_since and meter.last_ambiguous_mic_at > meter.last_mic_at:
+                state = "format_unknown"
+            elif now - since <= threshold:
+                state = "recent_mic_frame" if has_current_frame else "waiting_first_frame"
+            elif self.playing is not None and self.playing():
+                state = "stalled_during_playback"
+            else:
+                state = "stalled_idle"
+        return {"state": state, "mic_age_ms": mic_age}
+
     def _enforce_data_silence(self) -> None:
         """Drop a link whose /data plane is deaf while /control is still healthy.
 
@@ -629,6 +667,11 @@ class DeviceLink:
         """
         if self._closing:
             return
+        mic_stalled = self.mic_uplink_status()["state"] == "stalled_during_playback"
+        if mic_stalled and not self._reported_mic_stall:
+            log.warning("dot2 link: current microphone uplink stalled during playback (%s); "
+                        "automatic reconnect remains deferred until idle", self.device_id)
+        self._reported_mic_stall = mic_stalled
         data = self._data
         control = self._control
         if data is None or control is None:
@@ -763,6 +806,7 @@ class DeviceLink:
 
     def _adopt_data(self, conn: ServerConnection) -> None:
         """Make ``conn`` the data plane, retiring a superseded one first."""
+        self._reported_mic_stall = False
         previous = self._data
         if previous is not None and previous is not conn:
             self._abandon(previous, 1011, "superseded by a new data plane")
@@ -1123,7 +1167,10 @@ class DeviceLink:
             self._device_log.append(line)
             log.debug(line)
         elif kind == "listen_state":
-            self._listen_state = str(message.get("state") or "").strip().lower()
+            state = str(message.get("state") or "").strip().lower()
+            if state == "stream" and self._listen_state != state:
+                self._last_stream_at = time.monotonic()
+            self._listen_state = state
             log.info("dot2 link: listen_state=%s", self._listen_state or "?")
         elif kind == "oww_wake":
             self._on_oww_wake(message)
@@ -1296,12 +1343,20 @@ class DeviceLink:
                 if kind == FRAME_MIC:
                     # [0x01][seq u16 BE][PCM]; the sequence is not audio.
                     if len(raw) < 3:
+                        if conn is self._data:
+                            meter.last_ambiguous_mic_at = time.monotonic()
                         continue
                     payload = bytes(raw[3:])
                     control = mic_control(payload) if len(payload) == 1 else None
                     if control is not None:
                         log.debug("dot2 link: mic control 0x%02x", control)
                         continue
+                    if conn is self._data:
+                        expected_length = 5120 if self.ref_uplink else 2560
+                        if len(payload) == expected_length:
+                            meter.last_mic_at = time.monotonic()
+                        else:
+                            meter.last_ambiguous_mic_at = time.monotonic()
                     self._enqueue_audio(payload)
                 elif kind in (FRAME_VAD_END, FRAME_NO_SPEECH_TIMEOUT):
                     log.debug("dot2 link: turn sentinel 0x%02x", kind)
