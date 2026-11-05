@@ -47,10 +47,26 @@ from .wake import MAX_PENDING_WAKES, BoundedWakeQueue, map_oww_wake
 
 log = logging.getLogger(__name__)
 
+
+class _PathAudio(bytes):
+    """A PCM block tied to the exact verified input generation."""
+
+    def __new__(cls, pcm: bytes, generation: int):
+        obj = super().__new__(cls, pcm)
+        obj.generation = generation
+        return obj
+
 CONTROL_PATH = "/control"
 DATA_PATH = "/data"
 PING_INTERVAL_S = 15.0
 HANDSHAKE_TIMEOUT_S = 10.0
+# Only continuous unverified PCM starts this timer; quiet/muted input does not.
+CANDIDATE_NEGOTIATION_TIMEOUT_S = 5.0
+CANDIDATE_UNVERIFIED_MAX_GAP_S = 0.35
+CANDIDATE_FAILURE_LIMIT = 3
+CANDIDATE_STABLE_FRAMES = 10
+CANDIDATE_STABLE_S = 0.6
+CANDIDATE_FRAME_GAP_MAX_S = 0.35
 AUDIO_QUEUE_CHUNKS = 64          # 64 x 80 ms ≈ 5 s of slack before dropping oldest
 CONFIG_CACHE = "device-log.jsonl"
 
@@ -248,6 +264,8 @@ class DeviceLink:
         push_config: bool = True,
         aec_enabled: bool = True,
         ref_uplink: bool = False,
+        array_aec_v1: bool = False,
+        array_aec_tail_ms: int = 256,
         mic_gain_db: int | None = None,
         aec_tail_ms: int | None = None,
         aec_delay_ms: int | None = None,
@@ -280,6 +298,28 @@ class DeviceLink:
                                    else max(0.0, min(float(volume_cap_percent), 100.0)))
         self.push_config = push_config
         self.aec_enabled = aec_enabled
+        self.array_aec_v1 = array_aec_v1 is True
+        if self.array_aec_v1 and (aec_enabled is not True or ref_uplink is not True
+                                  or push_config is not True or type(array_aec_tail_ms) is not int
+                                  or array_aec_tail_ms not in (64, 256)):
+            raise ValueError("array AEC requires device AEC, reference and config push")
+        self.array_aec_tail_ms = array_aec_tail_ms
+        self._audio_path_epoch = ""
+        self._audio_path_status = None
+        self._audio_path_bound = 0
+        self._audio_path_highwater = 0
+        self._audio_status_highwater = 0
+        self._audio_path_stopped = 0
+        self._input_generation = 0
+        self._input_identity = None
+        self._unverified_pcm_since = None
+        self._unverified_pcm_last = None
+        self.audio_path_failures = 0
+        self.audio_path_blocked = False
+        self.audio_path_failure_reason = ""
+        self._audio_path_valid_frames = 0
+        self._audio_path_valid_since = None
+        self._audio_path_valid_last = None
         # Advertise dot2_hw_ref so a patched firmware (v2.19.0-ea.1 + the
         # echomuse-dot2-ref patch) sends [beam | de-aliased ch8 ref] instead of
         # mono. The stock firmware ignores the feature, so this is safe before
@@ -482,6 +522,8 @@ class DeviceLink:
         """
         self._control = None
         self._data = None
+        if self.array_aec_v1:
+            self._reset_audio_path(new_control=True)
         self.connected.clear()
         self._inflight_bytes = 0
         self._pong_waiters.clear()
@@ -629,6 +671,10 @@ class DeviceLink:
         """
         if self._closing:
             return
+        if self.array_aec_v1 and self.audio_path_blocked:
+            # Input was deliberately latched off; reconnecting cannot cure it
+            # and would also interrupt the still-usable speaker direction.
+            return
         data = self._data
         control = self._control
         if data is None or control is None:
@@ -746,6 +792,9 @@ class DeviceLink:
             self._abandon(previous, 1011, "superseded by a new register")
             log.info("dot2 link: retired the superseded control plane (%s)", self.device_id)
         self._control = conn
+        if self.array_aec_v1:
+            self._reset_audio_path(new_control=True)
+            self._audio_path_epoch = secrets.token_hex(16)
         # A reconnect can land on a device whose config changed under us: the
         # listen state, the proof that it can score and the last volume it
         # reported all belong to the connection that is being replaced.
@@ -768,6 +817,10 @@ class DeviceLink:
             self._abandon(previous, 1011, "superseded by a new data plane")
             log.info("dot2 link: retired the superseded data plane (%s)", self.device_id)
         self._data = conn
+        if self.array_aec_v1:
+            self._audio_path_bound = 0
+            self._unverified_pcm_since = None
+            self._invalidate_audio_generation()
         self._inflight_bytes = 0
 
     def _teardown_control(self, reason: str) -> None:
@@ -990,6 +1043,14 @@ class DeviceLink:
             meter.accounted = True
             return False
 
+        if self.array_aec_v1:
+            capabilities = message.get("capabilities")
+            if (not isinstance(capabilities, list)
+                    or not {"array_aec_v1", "ref_uplink"} <= set(
+                        value for value in capabilities if isinstance(value, str))):
+                await self._refuse(conn, 1008, "array AEC capabilities required")
+                meter.accounted = True
+                return False
         self.info = DeviceInfoReport(
             device_id=str(message.get("device_id") or ""),
             version=str(message.get("version") or ""),
@@ -1041,6 +1102,7 @@ class DeviceLink:
                        if self.oww_threshold is not None else {}),
                     "wakeWordEnabled": self.wake_word_enabled,
                     "aecEnabled": self.aec_enabled,
+                    **({"audioPathEpoch": self._audio_path_epoch} if self.array_aec_v1 else {}),
                     **({"micGainDb": self.mic_gain_db} if self.mic_gain_db is not None else {}),
                     **({"aecTailMs": self.aec_tail_ms} if self.aec_tail_ms is not None else {}),
                     **({"aecDelayMs": self.aec_delay_ms} if self.aec_delay_ms is not None else {}),
@@ -1062,6 +1124,117 @@ class DeviceLink:
         self._ping_task = meter.ping_task
         return True
 
+    def _clear_audio_queue(self) -> None:
+        while not self.audio.empty():
+            try:
+                self.audio.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+    def _reset_audio_path(self, *, new_control: bool) -> None:
+        self._audio_path_bound = 0
+        self._unverified_pcm_since = None
+        self._invalidate_audio_generation()
+        if new_control:
+            self._audio_path_epoch = ""
+            self._audio_path_status = None
+            self._audio_path_highwater = 0
+            self._audio_status_highwater = 0
+            self._audio_path_stopped = 0
+
+    def _invalidate_audio_generation(self) -> None:
+        self._input_generation += 1
+        self._input_identity = None
+        self._audio_path_valid_frames = 0
+        self._audio_path_valid_since = None
+        self._audio_path_valid_last = None
+        self._clear_audio_queue()
+
+    @property
+    def audio_path_ready(self) -> bool:
+        status = self._audio_path_status
+        return bool(self.array_aec_v1 and not self.audio_path_blocked
+                    and self._control is not None and self._data is not None
+                    and self._audio_path_bound and status is not None
+                    and status["stream_epoch"] == self._audio_path_bound
+                    and status["aec_state"] != "stopped")
+
+    def _refresh_audio_path(self) -> None:
+        identity = ((self._audio_path_epoch, self._audio_path_bound)
+                    if self.audio_path_ready else None)
+        if identity != self._input_identity:
+            self._invalidate_audio_generation()
+            self._input_identity = identity
+        if identity is None:
+            self._clear_audio_queue()
+        else:
+            self._unverified_pcm_since = None
+
+    def _accept_audio_bind(self, message: dict[str, Any]) -> None:
+        if self.audio_path_blocked:
+            return
+        n = message.get("stream_epoch")
+        if (type(n) is not int or n <= self._audio_path_highwater
+                or message.get("version") != 1 or type(message.get("version")) is not int
+                or not self._audio_path_epoch or message.get("epoch") != self._audio_path_epoch):
+            return
+        self._audio_path_bound = n
+        self._audio_path_highwater = n
+        self._refresh_audio_path()
+
+    def _accept_audio_path(self, message: dict[str, Any]) -> None:
+        if self.audio_path_blocked:
+            return
+        n = message.get("stream_epoch")
+        if (type(n) is not int or n < 1 or not self._audio_path_epoch
+                or message.get("epoch") != self._audio_path_epoch
+                or n < max(self._audio_path_highwater, self._audio_status_highwater)
+                or n == self._audio_path_highwater and self._audio_path_bound != n
+                or n <= self._audio_path_stopped):
+            return
+        reference, state = message.get("reference"), message.get("aec_state")
+        exact = {"version": 1, "profile": "array_aec_v1", "aec_owner": "device",
+                 "aec_enabled": True, "fusion": "seven_mic_crossover", "channels": 2,
+                 "mic_channels": 1, "ref_channels": 1, "sample_rate": 16000,
+                 "format": "s16le", "tail_ms": self.array_aec_tail_ms}
+        valid = (all(type(message.get(key)) is type(value) and message.get(key) == value
+                     for key, value in exact.items())
+                 and reference in ("present", "absent", "unknown")
+                 and state in ("active", "bypass", "degraded", "stopped")
+                 and (state != "active" or reference == "present"))
+        if valid:
+            self._audio_status_highwater = max(self._audio_status_highwater, n)
+        if state == "stopped" and valid:
+            self._audio_path_stopped = n
+        self._audio_path_status = dict(message) if valid else None
+        self._refresh_audio_path()
+
+    def reset_audio_path_failures(self) -> None:
+        """Explicitly permit a new stream negotiation after a latched failure."""
+        self.audio_path_failures = 0
+        self.audio_path_blocked = False
+        self.audio_path_failure_reason = ""
+        self._unverified_pcm_since = None
+        self._refresh_audio_path()
+
+    def _candidate_input_failed(self, conn: ServerConnection, reason: str) -> bool:
+        """Return True when the data socket was closed for another attempt."""
+        self.audio_path_failures += 1
+        self.audio_path_failure_reason = reason
+        self._audio_path_status = None
+        self._audio_path_bound = 0
+        self._unverified_pcm_since = None
+        self._invalidate_audio_generation()
+        if self.audio_path_failures >= CANDIDATE_FAILURE_LIMIT:
+            # Keep the authenticated socket for output; latch the input until
+            # explicit recovery rather than making the device reconnect forever.
+            self.audio_path_blocked = True
+            log.error("dot2 link: candidate input blocked after %d failures (%s)",
+                      self.audio_path_failures, reason)
+            return False
+        self._lose_data(conn, reason, abort=True, abort_reason="candidate input failure")
+        return True
+
     async def _on_control_message(self, raw: str | bytes) -> None:
         if isinstance(raw, bytes):
             return
@@ -1069,8 +1242,12 @@ class DeviceLink:
             message = json.loads(raw)
         except ValueError:
             return
+        if not isinstance(message, dict):
+            return
         kind = message.get("type")
-        if kind == "pong":
+        if kind == "audio_path" and self.array_aec_v1:
+            self._accept_audio_path(message)
+        elif kind == "pong":
             self._on_pong(message)
         elif kind == "playback_stats":
             # Reports identify a completed stream, not a particular voice turn.
@@ -1123,7 +1300,10 @@ class DeviceLink:
             self._device_log.append(line)
             log.debug(line)
         elif kind == "listen_state":
-            self._listen_state = str(message.get("state") or "").strip().lower()
+            state = str(message.get("state") or "").strip().lower()
+            if self.array_aec_v1 and state != self._listen_state:
+                self._unverified_pcm_since = None
+            self._listen_state = state
             log.info("dot2 link: listen_state=%s", self._listen_state or "?")
         elif kind == "oww_wake":
             self._on_oww_wake(message)
@@ -1135,6 +1315,8 @@ class DeviceLink:
     def _set_muted(self, value: object) -> None:
         """Record a reported mute state; anything non-boolean is ignored, not guessed."""
         if isinstance(value, bool):
+            if self.array_aec_v1 and (not self.muted_known or self.muted != value):
+                self._unverified_pcm_since = None
             if self.muted_known and self.muted and not value:
                 # Give the device a full silence window to restart capture.
                 self._last_unmuted_at = time.monotonic()
@@ -1287,6 +1469,16 @@ class DeviceLink:
         closed: BaseException | None = None
         try:
             async for raw in conn:
+                if self.array_aec_v1 and conn is not self._data:
+                    break
+                if self.array_aec_v1 and isinstance(raw, str):
+                    try:
+                        message = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if isinstance(message, dict) and message.get("type") == "audio_path_bind":
+                        self._accept_audio_bind(message)
+                    continue
                 if not isinstance(raw, (bytes, bytearray)) or not raw:
                     continue
                 meter.rx_bytes += len(raw)
@@ -1302,6 +1494,43 @@ class DeviceLink:
                     if control is not None:
                         log.debug("dot2 link: mic control 0x%02x", control)
                         continue
+                    if self.array_aec_v1:
+                        if self.audio_path_blocked:
+                            continue
+                        if not self.audio_path_ready:
+                            if self.muted_known and self.muted and self._mute_reported_on_control:
+                                self._unverified_pcm_since = None
+                                continue
+                            now = time.monotonic()
+                            if (self._unverified_pcm_since is None
+                                    or self._unverified_pcm_last is None
+                                    or now - self._unverified_pcm_last > CANDIDATE_UNVERIFIED_MAX_GAP_S):
+                                self._unverified_pcm_since = now
+                            self._unverified_pcm_last = now
+                            if now - self._unverified_pcm_since >= CANDIDATE_NEGOTIATION_TIMEOUT_S:
+                                if self._candidate_input_failed(conn, "candidate PCM without verified contract"):
+                                    break
+                            continue
+                        if len(payload) != 5120:
+                            # An incompatible wire must not leave a live but
+                            # permanently deaf data connection. Force one
+                            # bounded reconnect and require a fresh stream bind.
+                            if self._candidate_input_failed(conn, "invalid candidate PCM layout"):
+                                break
+                            continue
+                        now = time.monotonic()
+                        if (self._audio_path_valid_last is not None
+                                and now - self._audio_path_valid_last > CANDIDATE_FRAME_GAP_MAX_S):
+                            self._audio_path_valid_frames = 0
+                            self._audio_path_valid_since = None
+                        self._audio_path_valid_last = now
+                        self._audio_path_valid_frames += 1
+                        if self._audio_path_valid_since is None:
+                            self._audio_path_valid_since = now
+                        if (self._audio_path_valid_frames >= CANDIDATE_STABLE_FRAMES
+                                and now - self._audio_path_valid_since >= CANDIDATE_STABLE_S):
+                            self.audio_path_failures = 0
+                            self.audio_path_failure_reason = ""
                     self._enqueue_audio(payload)
                 elif kind in (FRAME_VAD_END, FRAME_NO_SPEECH_TIMEOUT):
                     log.debug("dot2 link: turn sentinel 0x%02x", kind)
@@ -1354,6 +1583,9 @@ class DeviceLink:
             )
             return
         self._data = None
+        if self.array_aec_v1:
+            self._audio_path_bound = 0
+            self._invalidate_audio_generation()
         self._inflight_bytes = 0
         self.connected.clear()
         # Diagnostics only: count the close, measure the gap since the previous
@@ -1389,6 +1621,10 @@ class DeviceLink:
         self._notify_link_lost(reason)
 
     def _enqueue_audio(self, payload: bytes) -> None:
+        if self.array_aec_v1:
+            if not self.audio_path_ready:
+                return
+            payload = _PathAudio(payload, self._input_generation)
         self.stats.mic_frames += 1
         self.stats.mic_bytes += len(payload)
         self.stats.last_mic_at = time.monotonic()
@@ -1406,7 +1642,12 @@ class DeviceLink:
         """Yield the device's 80 ms mono blocks until the link is closed."""
         while not self._closing:
             try:
-                yield await asyncio.wait_for(self.audio.get(), timeout=0.5)
+                block = await asyncio.wait_for(self.audio.get(), timeout=0.5)
+                if self.array_aec_v1 and (not self.audio_path_ready
+                        or not isinstance(block, _PathAudio)
+                        or block.generation != self._input_generation):
+                    continue
+                yield block
             except TimeoutError:
                 continue
 
@@ -1417,6 +1658,8 @@ class DeviceLink:
         features: list[str] = []
         if self.ref_uplink:
             features.append("dot2_hw_ref")
+        if self.array_aec_v1:
+            features.append("dot2_array_aec_v1")
         return tuple(features)
 
     async def _send_control(self, message: dict[str, Any]) -> None:

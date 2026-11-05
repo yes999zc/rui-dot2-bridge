@@ -54,6 +54,7 @@ from .frames import MIC_RATE, SPEAKER_CHUNK_BYTES, SPEAKER_RATE
 from .volume import DEVICE_LEVEL_MAX, VOLUME_CAP_PERCENT, clamp_percent
 
 log = logging.getLogger(__name__)
+_ARRAY_AEC_VALIDATED = object()
 
 # P0b-C2: how old the last proof of a live data plane may be before `health()`
 # stops calling the speaker connected. The device streams mic frames every
@@ -206,6 +207,9 @@ class Dot2Adapter(DeviceAdapter):
         device_managed_volume: bool = False,
         push_config: bool = True,
         aec_enabled: bool = True,
+        array_aec_v1: bool = False,
+        array_aec_tail_ms: int = 256,
+        _array_aec_validated: object = None,
         oww_on_device: str = "off",
         oww_model: str = DEFAULT_OWW_MODEL,
         plug_id: str = "",
@@ -252,6 +256,14 @@ class Dot2Adapter(DeviceAdapter):
         _barge = os.environ.get("DOT2_BARGE_IN_ENABLED", "").strip().lower()
         _barge_thr = os.environ.get("DOT2_BARGE_IN_THRESHOLD", "").strip()
         self._aec_tail_ms = int(_tail) if _tail else None
+        if array_aec_v1:
+            if (_array_aec_validated is not _ARRAY_AEC_VALIDATED
+                    or aec_enabled is not True or push_config is not True or self.channels != 2
+                    or self.mic_channels != 1 or self.ref_channels != 1
+                    or type(array_aec_tail_ms) is not int or array_aec_tail_ms not in (64, 256)
+                    or self._aec_tail_ms not in (None, array_aec_tail_ms)):
+                raise ValueError("array AEC requires explicit device AEC and 1 mic + 1 reference")
+            self._aec_tail_ms = array_aec_tail_ms
         self._aec_delay_ms = int(_delay) if _delay else None
         self._agc_enabled = None if not _agc else _agc not in ("0", "false", "no", "off")
         self._barge_in_enabled = None if not _barge else _barge not in ("0", "false", "no", "off")
@@ -306,6 +318,8 @@ class Dot2Adapter(DeviceAdapter):
             "device_managed_volume": self.device_managed_volume,
             "push_config": push_config,
             "aec_enabled": aec_enabled,
+            "array_aec_v1": array_aec_v1,
+            "array_aec_tail_ms": array_aec_tail_ms,
             "ref_uplink": self.ref_channels > 0,
             "aec_tail_ms": self._aec_tail_ms,
             "aec_delay_ms": self._aec_delay_ms,
@@ -500,6 +514,16 @@ class Dot2Adapter(DeviceAdapter):
         percent = device_volume_to_percent(volume)
         await self._link.set_volume_percent(clamp_percent(percent, self.volume_cap_percent))
 
+    def audio_path_contract(self) -> dict | None:
+        """Current verified candidate identity for in-process RUI use only."""
+        link = self._link
+        if link is None or not getattr(link, "array_aec_v1", False) or not link.audio_path_ready:
+            return None
+        status = link._audio_path_status
+        return {"ready": True, "epoch": link._audio_path_epoch,
+                "stream_epoch": status["stream_epoch"], "generation": link._input_generation,
+                "profile": status["profile"], "aec_owner": status["aec_owner"]}
+
     def health(self) -> dict:
         """The plane's `speaker_connected` and the console read this.
 
@@ -536,12 +560,24 @@ class Dot2Adapter(DeviceAdapter):
             and bool(getattr(link, "control_plane_up", False))
             and bool(getattr(link, "_mute_reported_on_control", False))
         )
+        # A latched input deliberately stops the valid-mic clock. Like an
+        # observed physical mute, it must not by itself mark an adopted speaker
+        # socket lost; write failures and the half-open watchdog remain separate.
+        expected_blocked_input = bool(
+            getattr(link, "array_aec_v1", False) and getattr(link, "audio_path_blocked", False)
+            and getattr(link, "control_plane_up", False)
+        )
         connected = (
             link.connected.is_set()
             and int(getattr(stats, "data_connects", 0)) > 0
             and data_plane
-            and (fresh or expected_mic_silence)
+            and (fresh or expected_mic_silence or expected_blocked_input)
         )
+        if getattr(link, "array_aec_v1", False):
+            path_status = link._audio_path_status if link.audio_path_ready else None
+            profile_aec = "device AEC " + str((path_status or {}).get("aec_state", "unknown"))
+        else:
+            profile_aec = "device AEC on" if link.aec_enabled else "device AEC OFF - test mode"
         return {
             "connected": connected,
             # The adopted registered control socket is a separate fact from
@@ -572,10 +608,16 @@ class Dot2Adapter(DeviceAdapter):
             "firmware": link.info.version,
             "ip": link.info.ip,
             "transport": "wss",
-            "profile": (
-                f"{self.mic_channels} mic + {self.ref_channels} ref @16 kHz "
-                f"({'device AEC on' if link.aec_enabled else 'device AEC OFF - test mode'})"
-            ),
+            "profile": f"{self.mic_channels} mic + {self.ref_channels} ref @16 kHz ({profile_aec})",
+            **({"audio_path": {
+                "ready": link.audio_path_ready,
+                "blocked": link.audio_path_blocked,
+                "failures": link.audio_path_failures,
+                "failure_reason": link.audio_path_failure_reason,
+                "aec_state": (path_status or {}).get("aec_state", "unknown"),
+                "reference": (path_status or {}).get("reference", "unknown"),
+                "stream_epoch": (path_status or {}).get("stream_epoch"),
+            }} if getattr(link, "array_aec_v1", False) else {}),
             "rtt_ms": link.stats.rtt_ms,
             "mic_frames": link.stats.mic_frames,
             "dropped_audio": link.stats.dropped_audio,
@@ -876,6 +918,10 @@ class Dot2Adapter(DeviceAdapter):
             return
         try:
             async for block in self._link.frames():
+                if (getattr(self._link, "array_aec_v1", False)
+                        and (not self._link.audio_path_ready
+                             or getattr(block, "generation", None) != self._link._input_generation)):
+                    continue
                 self._record(block)
                 if self._uplink_dump is not None:
                     if self._uplink_dump_handle is None:
@@ -887,6 +933,10 @@ class Dot2Adapter(DeviceAdapter):
                         log.info("dot2 adapter: uplink block %d bytes=%d channels=%d",
                                  self._uplink_blocks, len(block), self.channels)
                 for piece in _rechunk(block, self.channels, PLAY_CHUNK_MS):
+                    if (getattr(self._link, "array_aec_v1", False)
+                            and (not self._link.audio_path_ready
+                                 or getattr(block, "generation", None) != self._link._input_generation)):
+                        break
                     if not piece:
                         continue
                     if self._silence_window_active(time.monotonic()):
@@ -1211,14 +1261,44 @@ def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
        oww_model/oww_on_device) - explicitly configured values win over env;
     3. DOT2_* environment fallbacks, then the legacy plug.json defaults.
 
-    ``cfg`` exists for the builder signature only: rui has already resolved the
-    device fields and ``params.plug_id`` before calling, and this plug needs no
-    global config. Both arguments are optional because the contract kit builds
-    with its fake device/config objects.
+    The optional array-AEC candidate validates the effective RUI audio owner and
+    wire layout against the actual device configuration. Legacy builds are unchanged.
     """
     env = os.environ
     manifest = plug_manifest.load()
     params = _params(dev)
+    candidate = params.get("array_aec_v1", False)
+    if type(candidate) is not bool:
+        raise ValueError("array_aec_v1 must be an explicit boolean")
+    resolved = None
+    if candidate:
+        from rui.config.schema import Config, DeviceConfig, effective_device_audio
+
+        if not isinstance(cfg, Config) or not isinstance(dev, DeviceConfig):
+            raise ValueError("array AEC needs the actual RUI device and global configuration")
+        configured = next((item for item in cfg.devices if item.id == dev.id), None)
+        if configured is None:
+            raise ValueError("array AEC device is missing from RUI configuration")
+        configured_params = _params(configured)
+        for key in ("array_aec_v1", "aec_enabled", "push_config", "lock_mic", "lockMic",
+                    "aec_tail_ms", "mic_channels", "ref_channels"):
+            if configured_params.get(key) != params.get(key):
+                raise ValueError("array AEC parameters do not match RUI configuration")
+        resolved = effective_device_audio(cfg, configured)
+        cap, aec = resolved.capture, resolved.aec
+        if (aec.enabled is not False or aec.who != "device"
+                or (cap.rate, cap.bits, cap.channels, cap.mic_channels, cap.ref_channels)
+                != (16000, 16, 2, 1, 1)
+                or cap.mic_shift != 0 or cap.ref_shift != 0
+                or params.get("aec_enabled") is not True
+                or params.get("push_config", True) is not True
+                or params.get("lock_mic", False) is not False
+                or params.get("lockMic", False) is not False
+                or any(key in params and params[key] != value
+                       for key, value in (("mic_channels", 1), ("ref_channels", 1)))
+                or type(params.get("aec_tail_ms", 256)) is not int
+                or params.get("aec_tail_ms", 256) not in (64, 256)):
+            raise ValueError("array AEC owner, config push or wire layout is invalid")
 
     # -- identity and inbound transport ---------------------------------------
     device_id = _text(getattr(dev, "id", None), params.get("id"), "dot2")
@@ -1311,6 +1391,8 @@ def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
         plug_manifest.get(manifest, "audio", "capture", "ref_channels"),
         0,
     )
+    if candidate:
+        mic_channels, ref_channels = resolved.capture.mic_channels, resolved.capture.ref_channels
     mic_gain_db = _optional_int(
         env.get("DOT2_MIC_GAIN_DB"),
         plug_manifest.get(manifest, "audio", "capture", "mic_gain_db"),
@@ -1375,6 +1457,10 @@ def build(dev: object | None = None, cfg: object | None = None) -> Dot2Adapter:
         volume_cap_percent=volume_cap_percent,
         device_managed_volume=params.get("device_managed_volume") is True and not mute,
         aec_enabled=aec_enabled,
+        push_config=params.get("push_config", True) if candidate else True,
+        array_aec_v1=candidate,
+        array_aec_tail_ms=params.get("aec_tail_ms", 256),
+        _array_aec_validated=_ARRAY_AEC_VALIDATED if candidate else None,
         oww_on_device=oww_on_device,
         oww_model=oww_model,
         plug_id=plug_id,
