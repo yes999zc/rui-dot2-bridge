@@ -154,6 +154,27 @@ class LinkTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.link.stats.mic_frames, 1)
         self.assertEqual(self.link.stats.mic_bytes, 2560)
 
+    async def test_data_replacement_keeps_only_the_new_socket_queue(self) -> None:
+        url = f"ws://127.0.0.1:{self.port}/data"
+        headers = {"X-EM-Token": "secret"}
+        async with ws_client.connect(url, additional_headers=headers) as old:
+            await old.send(bytes([FRAME_MIC]) + b"\x00\x01" + b"A" * 2560)
+            for _ in range(100):
+                if self.link.audio.qsize() == 1:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(self.link.audio.qsize(), 1)
+            async with ws_client.connect(url, additional_headers=headers) as new:
+                for _ in range(100):
+                    if self.link.stats.data_connects == 2:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertEqual(self.link.stats.data_connects, 2)
+                self.assertTrue(self.link.audio.empty())
+                self.assertEqual(self.link.stats.stale_audio_dropped, 1)
+                await new.send(bytes([FRAME_MIC]) + b"\x00\x02" + b"B" * 2560)
+                self.assertEqual(await asyncio.wait_for(self.link.audio.get(), 2), b"B" * 2560)
+
     async def test_speaker_frames_and_eos(self) -> None:
         async with ws_client.connect(
             f"ws://127.0.0.1:{self.port}/data", additional_headers={"X-EM-Token": "secret"}

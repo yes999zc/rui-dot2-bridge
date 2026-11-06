@@ -166,6 +166,7 @@ class LinkStats:
     mic_bytes: int = 0
     speaker_frames: int = 0
     dropped_audio: int = 0
+    stale_audio_dropped: int = 0
     rtt_ms: float | None = None
     last_mic_at: float = 0.0
     # Last /data frame actually written to the device (monotonic). Together with
@@ -808,6 +809,8 @@ class DeviceLink:
         """Make ``conn`` the data plane, retiring a superseded one first."""
         self._reported_mic_stall = False
         previous = self._data
+        if previous is not conn:
+            self._discard_queued_audio()
         if previous is not None and previous is not conn:
             self._abandon(previous, 1011, "superseded by a new data plane")
             log.info("dot2 link: retired the superseded data plane (%s)", self.device_id)
@@ -1341,6 +1344,11 @@ class DeviceLink:
                 kind = raw[0]
                 payload = bytes(raw[1:])
                 if kind == FRAME_MIC:
+                    # An aborted socket can still have messages buffered in its
+                    # reader. Only the currently adopted data connection may
+                    # contribute microphone samples to the shared queue.
+                    if conn is not self._data:
+                        continue
                     # [0x01][seq u16 BE][PCM]; the sequence is not audio.
                     if len(raw) < 3:
                         if conn is self._data:
@@ -1442,6 +1450,15 @@ class DeviceLink:
         if abort:
             self._abandon(conn, 1011, abort_reason)
         self._notify_link_lost(reason)
+
+    def _discard_queued_audio(self) -> None:
+        """Discard samples that belonged to a disconnected data generation."""
+        while True:
+            try:
+                self.audio.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            self.stats.stale_audio_dropped += 1
 
     def _enqueue_audio(self, payload: bytes) -> None:
         self.stats.mic_frames += 1
