@@ -509,6 +509,12 @@ class Dot2Adapter(DeviceAdapter):
         percent = device_volume_to_percent(volume)
         await self._link.set_volume_percent(clamp_percent(percent, self.volume_cap_percent))
 
+    @property
+    def playback_progress(self) -> float:
+        """Last successful PCM socket write, excluding buffered or dropped audio."""
+        stats = getattr(self._link, 'stats', None)
+        return float(getattr(stats, 'last_pcm_sent_at', 0.0) or 0.0)
+
     def health(self) -> dict:
         """The plane's `speaker_connected` and the console read this.
 

@@ -102,6 +102,10 @@ class ManifestLayoutTest(unittest.TestCase):
                 "wake_words",
                 "port",
                 "oww_model",
+                "aec_enabled",
+                "device_managed_volume",
+                "mic_channels",
+                "ref_channels",
                 # C-001: the five formerly env-only runtime knobs are declared so
                 # a v2 config can set them per device (no unknown_params_ignored).
                 "control_port",
@@ -112,6 +116,10 @@ class ManifestLayoutTest(unittest.TestCase):
             },
         )
         declared = {param["key"]: param for param in device["params"]}
+        for key, kind in (("aec_enabled", "bool"), ("device_managed_volume", "bool"),
+                          ("mic_channels", "int"), ("ref_channels", "int")):
+            self.assertEqual(declared[key]["type"], kind)
+            self.assertNotIn("default", declared[key], "declarations must preserve adapter fallback")
         self.assertEqual(
             {key: (declared[key]["type"], declared[key]["default"]) for key in
              ("control_port", "loudness_file", "eq_dir", "secrets_dir", "oww_threshold")},

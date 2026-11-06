@@ -55,6 +55,11 @@ params:
   - {key: wake_words, label: "唤醒词", type: list, default: ["你好小瑞"], max: 3}
   - {key: port, label: "入站端口", type: int, default: 8870, help: "EchoMuse wss listen port; the device dials this port."}
   - {key: oww_model, label: "设备端唤醒模型", type: string, default: "", help: "Only set when a matching OWW model was pushed to the device; empty keeps RUI KWS."}
+  # Declare existing adapter inputs without introducing defaults that override env fallback.
+  - {key: aec_enabled, label: "设备端 AEC", type: bool, help: "Enable device-side echo cancellation. This does not configure server-side AEC; keep the existing audio owner and wire layout."}
+  - {key: device_managed_volume, label: "使用设备音量", type: bool, help: "Keep device-owned playback volume; do not apply the bridge startup volume policy."}
+  - {key: mic_channels, label: "上行麦克风通道数", type: int, help: "Microphone channels in the uplink, after any device-side array fusion. Must match the firmware stream."}
+  - {key: ref_channels, label: "上行参考通道数", type: int, help: "Playback-reference channels in the uplink. Must match the firmware stream and server capture layout."}
   # Per-device runtime knobs (C-001). Empty string means "inherit": the adapter
   # falls back to DOT2_* env, then to the device-level default; control_port 0
   # keeps the loopback loudness API off, so a second plane cannot claim the port.
